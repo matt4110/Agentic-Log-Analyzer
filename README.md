@@ -1,0 +1,1 @@
+This is a log analyzer that reviews logs for attacks and compromise.
