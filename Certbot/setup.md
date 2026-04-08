@@ -37,3 +37,5 @@ in this setup the certificate will be put into SafeLineWAF when configuring the 
 sets up a cron job to renew your certificate automatically
 `echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && sudo certbot renew -q" | sudo tee -a /etc/crontab > /dev/null`
 
+#### **Monthly Update Certbot**
+`sudo /opt/certbot/bin/pip install --upgrade certbot`
