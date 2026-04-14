@@ -1,1 +1,1 @@
-This is a log analyzer that reviews logs for attacks and compromise.
+This is an AI log analyzer that creates a daily report that includes EOIs, Attacks, and IOCs.
