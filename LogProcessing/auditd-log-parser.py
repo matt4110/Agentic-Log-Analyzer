@@ -60,7 +60,7 @@ with open(ufw_log, "r") as logfile, \
                 "acct":            inner_fields.get('acct'),
                 "exe":             inner_fields.get('exe'),
                 "src_hostname":    inner_fields.get('hostname'),
-                "addr":            inner_fields.get('addr'),
+                "src_ip":            inner_fields.get('addr'),
                 "terminal":        inner_fields.get('terminal'),
                 "res":             inner_fields.get('res'),
                 "uid_resolved":    suffix_fields.get('UID'),

@@ -59,8 +59,8 @@ with open(auth_file, "r") as logfile, \
                 "process": process,
                 "pid": pid,
                 "user": user,
-                "ip_address": ip_address,
-                "port": port,
+                "src_ip": ip_address,
+                "src_port": port,
                 "message": rest.rstrip(),
             }
             json.dump(parsedline, jfile)
