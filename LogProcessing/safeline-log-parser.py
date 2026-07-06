@@ -44,6 +44,7 @@ with open(waf_file, "r") as logfile, \
                 "req_path": path,
                 "response": match.group("status"),
                 "user_agent": match.group("user_agent"),
+                "size": match.group("size"),
             }
 
             json.dump(parsedline, jfile)

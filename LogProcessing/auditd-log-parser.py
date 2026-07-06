@@ -3,9 +3,9 @@ import json
 import re
 
 current_date = date.today().isoformat()
-ufw_log = "/var/log/ufw.log.1"
+auditd_log = "/var/log/auditd.log.1"
 
-with open(ufw_log, "r") as logfile, \
+with open(auditd_log, "r") as logfile, \
      open(f"/var/log/auditd-{current_date}.json", "a") as jfile:
 
     for line in logfile:
