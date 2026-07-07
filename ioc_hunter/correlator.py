@@ -11,6 +11,7 @@ from utils import is_local_ip
 IP_FIELDS_BY_SOURCE = {
     "auth": ["src_ip"],
     "auditd": ["src_ip"],
+    "auditd_merged": ["src_ip"],
     "ufw": ["src_ip", "dst_ip"],
     "waf": ["src_ip"],
 }

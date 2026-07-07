@@ -23,6 +23,7 @@ import config
 from loaders import load_all
 from actor_db import ActorDB
 from correlator import build_bundles, combined_timeline, filter_local_flags
+import audit_merge
 
 from detectors import auth as auth_detectors
 from detectors import auditd as auditd_detectors
@@ -45,12 +46,20 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
     for k, v in records.items():
         print(f"[info]   {k}: {len(v)} records")
 
+    print("[info] merging auditd SYSCALL+EXECVE events and backfilling src_ip via session lookup...")
+    merged_auditd = audit_merge.merge_events(records["auditd"], run_date=run_date)
+    records["auditd_merged"] = merged_auditd
+    attributed = sum(1 for e in merged_auditd if e.get("src_ip"))
+    ambiguous = sum(1 for e in merged_auditd if e.get("src_ip_ses_reuse_ambiguous"))
+    print(f"[info]   {len(merged_auditd)} exec events merged, {attributed} attributed to a src_ip"
+          f" ({ambiguous} with ambiguous session reuse)")
+
     db = ActorDB(db_path)
 
     print("[info] running detectors...")
     flags = []
     flags += auth_detectors.run_all(records["auth"])
-    flags += auditd_detectors.run_all(records["auditd"])
+    flags += auditd_detectors.run_all(records["auditd"], merged_auditd)
     flags += ufw_detectors.run_all(records["ufw"], db, run_date=run_date)
     flags += waf_detectors.run_all(records["waf"])
 

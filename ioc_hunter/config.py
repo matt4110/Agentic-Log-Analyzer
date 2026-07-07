@@ -145,8 +145,66 @@ DOMAIN_CANDIDATE_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# Privilege escalation (auditd)
+# Reverse-shell / malicious-command patterns matched against reconstructed
+# EXECVE argv (joined as `cmdline`). This is where actual command-line
+# content lets us catch things an exe-name blocklist can't - e.g. a plain
+# /bin/bash spawning a reverse shell via redirected file descriptors.
+# ---------------------------------------------------------------------------
+REVERSE_SHELL_ARGV_PATTERNS = [
+    r"/dev/tcp/",
+    r"/dev/udp/",
+    r"\bnc\s+.*-e\s+/bin/(ba)?sh",
+    r"\bmkfifo\b.*\|\s*/bin/(ba)?sh",
+    r"\bbash\s+-i\b",
+    r"\bsh\s+-i\b",
+    r"\bpython[23]?\s+-c\s+.*socket",
+    r"\bperl\s+-e\s+.*socket",
+    r"\bruby\s+-rsocket\b",
+    r"\bphp\s+-r\s+.*fsockopen",
+    r"\bsocat\b.*exec",
+]
+
+SUSPICIOUS_COMMAND_PATTERNS = [
+    r"\bcurl\b.*\|\s*(ba)?sh\b",
+    r"\bwget\b.*-O-.*\|\s*(ba)?sh\b",
+    r"\bwget\b.*\|\s*(ba)?sh\b",
+    r"\bbase64\s+-d\b.*\|\s*(ba)?sh\b",
+    r"\bchmod\s+\+x\b.*&&",
+    r"\becho\b.*\|\s*base64\s+-d\b",
+    r">\s*/etc/(passwd|shadow|cron\.d)",
+]
+
+_compile_group("reverse_shell", REVERSE_SHELL_ARGV_PATTERNS)
+_compile_group("suspicious_cmd", SUSPICIOUS_COMMAND_PATTERNS)
+
+# ---------------------------------------------------------------------------
+# ses -> src_ip backfill sanity limits
+# ---------------------------------------------------------------------------
+# If the nearest ses-tagged src_ip record is farther than this from the
+# exec event being backfilled, still use it but mark low_confidence=True
+# in the merged record so the LLM/analyst can weigh it accordingly.
+SES_BACKFILL_LOW_CONFIDENCE_SECONDS = 3600  # 1 hour
+
+# ---------------------------------------------------------------------------
+# Privilege escalation (auditd) - tightened ruleset
 # ---------------------------------------------------------------------------
 PRIVESC_OPS = [
     "PAM:setcred", "PAM:session_open", "PAM:session_close", "PAM:acct_mgmt",
 ]
+
+# Standard, expected tools for gaining elevated privileges. A PAM root
+# escalation op via one of these is routine admin activity, not an IOC.
+# Anything else claiming a root PAM op is worth a look.
+KNOWN_PRIVESC_TOOLS = {"sudo", "su", "pkexec", "doas"}
+
+# System processes that legitimately run as uid=0 with no traceable auid
+# (no interactive login behind them - started at boot / by init / by cron).
+KNOWN_SYSTEM_DAEMONS = {
+    "sshd", "systemd", "cron", "crond", "init", "auditd", "rsyslogd",
+    "systemd-logind", "dbus-daemon", "networkd-dispatcher",
+}
+
+# x86_64 syscall numbers for the setuid/setgid family. A process outside
+# KNOWN_PRIVESC_TOOLS/KNOWN_SYSTEM_DAEMONS directly invoking one of these
+# to become uid=0 is a stronger signal than a bare uid/auid mismatch.
+SETUID_SYSCALL_NUMBERS = {"105", "106", "113", "114", "117", "119", "126"}
