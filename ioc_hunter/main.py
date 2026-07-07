@@ -112,7 +112,7 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, default=_json_default)
+        json.dump(report, f, default=_json_default, separators=(",", ":"))
 
     print(f"[info] wrote combined report: {out_path}")
     print(f"[info] running actor list now has {len(db.all_actors())} entries in {db_path}")
