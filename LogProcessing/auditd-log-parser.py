@@ -38,7 +38,7 @@ def _maybe_hex_decode(value):
 
 
 with open(auditd_log, "r") as logfile, \
-     open(f"/var/log/auditd-{current_date}.json", "a") as jfile:
+     open(f"/var/log/parsed/auditd-{current_date}.jsonl", "a") as jfile:
     for line in logfile:
         if 'auditd' not in line:
             continue

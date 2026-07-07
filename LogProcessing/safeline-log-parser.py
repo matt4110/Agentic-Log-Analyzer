@@ -21,7 +21,7 @@ log_pattern = re.compile(
 )
 
 with open(waf_file, "r") as logfile, \
-     open(f"/var/log/safeline-{current_date}.json", "a") as jfile:
+     open(f"/var/log/parsed/safeline-{current_date}.jsonl", "a") as jfile:
     
     for line in logfile:
         match = log_pattern.match(line)
