@@ -2,9 +2,9 @@ from datetime import date
 import json
 
 current_date = date.today().isoformat()
-auditd_file = "/var/log/auditd.log.1"
+ufw_file = "/var/log/ufw.log.1"
 
-with open(auditd_file, "r") as logfile, \
+with open(ufw_file, "r") as logfile, \
      open(f"/var/log/ufw-{current_date}.json", "a") as jfile:
 
     for line in logfile:
