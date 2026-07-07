@@ -46,6 +46,12 @@ class ActorDB:
         Add or update a flagged indicator. `category` is a single detector
         name (e.g. 'port_scan', 'sqli'); it gets appended to the actor's
         category list if not already present.
+
+        Does NOT commit - call commit() once after a batch of upserts.
+        Committing per-call forces an fsync to disk every time, which is
+        fine for a handful of writes but turns thousands of flags into a
+        multi-minute bottleneck for no reason (43.9s for ~18k upserts in
+        testing, vs <1s batched).
         """
         now = run_date or datetime.now(timezone.utc).isoformat()
         cur = self.conn.execute(

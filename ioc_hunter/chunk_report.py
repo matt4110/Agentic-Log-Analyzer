@@ -71,13 +71,20 @@ def pack_chunks(bundles, max_bytes):
     """Greedy bin-packing: fill each chunk up to max_bytes, never split a
     single bundle. A bundle bigger than max_bytes on its own gets its own
     oversized chunk (rare - e.g. a very noisy single scanning IP) rather
-    than being silently truncated."""
+    than being silently truncated.
+
+    Includes a per-bundle overhead estimate for the `indicators_in_chunk`
+    wrapper list the final file also carries - without it, chunks with
+    many small bundles packed together consistently ran ~1-2% over
+    max_bytes once that wrapper was added at write time.
+    """
+    OVERHEAD_PER_BUNDLE = 40  # covers the indicator string + JSON list punctuation in the wrapper
     bundles_sorted = sorted(bundles, key=_bundle_size, reverse=True)
     chunks = []
     current, current_size = [], 0
 
     for bundle in bundles_sorted:
-        size = _bundle_size(bundle)
+        size = _bundle_size(bundle) + OVERHEAD_PER_BUNDLE
         if current and current_size + size > max_bytes:
             chunks.append(current)
             current, current_size = [], 0

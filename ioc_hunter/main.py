@@ -105,6 +105,8 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
                 "categories": b["categories"],
                 "reasons": b["reasons"],
                 "related_event_count": b["related_event_count"],
+                "related_events_truncated": b["related_events_truncated"],
+                "related_events_stats": b.get("related_events_stats"),
             }
             for b in bundles
         ],

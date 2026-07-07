@@ -178,6 +178,28 @@ _compile_group("reverse_shell", REVERSE_SHELL_ARGV_PATTERNS)
 _compile_group("suspicious_cmd", SUSPICIOUS_COMMAND_PATTERNS)
 
 # ---------------------------------------------------------------------------
+# Related-event caps for the correlator/report - a single noisy scanning IP
+# can generate hundreds of near-identical blocked-packet log lines in a day.
+# Dumping all of them into the report bloats file size without adding
+# analytical value - an LLM doesn't need to see 200 individual SYN packets,
+# it needs "blocked 200x across these ports" plus a few examples. High-signal
+# categories (actual attack indicators) get a much higher ceiling since
+# completeness matters more there and they're rarely this voluminous anyway.
+# ---------------------------------------------------------------------------
+LOW_SIGNAL_ONLY_CATEGORIES = {
+    "port_scan", "repeated_blocked_connections", "unusual_outbound",
+}
+# Low-signal bundles keep only a handful of EXAMPLE events plus aggregate
+# stats (total count, time span, distinct ports/destinations) - at scale,
+# thousands of routine scanning IPs each contributing even 20 raw events
+# adds up to tens of thousands of entries that don't add analytical value
+# an LLM needs. High-signal categories (actual attack indicators) keep a
+# much larger cap since completeness matters more there and they're
+# rarely voluminous anyway.
+MAX_RELATED_EVENTS_LOW_SIGNAL = 3
+MAX_RELATED_EVENTS_HIGH_SIGNAL = 200
+
+# ---------------------------------------------------------------------------
 # ses -> src_ip backfill sanity limits
 # ---------------------------------------------------------------------------
 # If the nearest ses-tagged src_ip record is farther than this from the

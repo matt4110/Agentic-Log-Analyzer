@@ -6,6 +6,7 @@ into one timeline sorted by datetime for LLM analysis.
 """
 
 from utils import is_local_ip
+import config
 
 
 IP_FIELDS_BY_SOURCE = {
@@ -25,6 +26,12 @@ def _record_matches_domain(record, domain):
 
 
 def _build_ip_index(flat_records):
+    """
+    One pass over every record, bucketed by every IP value it carries.
+    Turns correlation from O(records x unique_indicators) into O(records)
+    total - the difference between finishing in seconds and grinding for
+    hours once you have thousands of flagged indicators.
+    """
     index = {}
     for r in flat_records:
         source = r.get("_source")
@@ -36,6 +43,45 @@ def _build_ip_index(flat_records):
                 index.setdefault(v, []).append(r)
                 seen_values.add(v)
     return index
+
+
+def _sample_events(related_sorted, cap):
+    """
+    If under cap, return everything. Otherwise keep a first-half/last-half
+    split so the sample still shows both when the activity started and
+    what was most recent, rather than just truncating to the earliest N
+    events and silently dropping everything after.
+    """
+    total = len(related_sorted)
+    if total <= cap:
+        return related_sorted, False
+    head = cap // 2
+    tail = cap - head
+    sampled = related_sorted[:head] + related_sorted[-tail:]
+    return sampled, True
+
+
+def _aggregate_stats(related_sorted):
+    """
+    Cheap aggregate stats computed from the FULL related-event list before
+    sampling, so low-signal bundles don't lose all analytical value just
+    because we're not shipping every raw event. Distinct ports/destinations
+    are what actually distinguish "one blocked probe" from "hammered 40
+    different ports" - that signal shouldn't disappear just because we
+    stopped including all 40 individual packets.
+    """
+    if not related_sorted:
+        return {}
+    first_ts = related_sorted[0].get("_ts") or related_sorted[0].get("datetime")
+    last_ts = related_sorted[-1].get("_ts") or related_sorted[-1].get("datetime")
+    distinct_dst_ports = {r.get("dst_port") for r in related_sorted if r.get("dst_port")}
+    distinct_dst_ips = {r.get("dst_ip") for r in related_sorted if r.get("dst_ip")}
+    return {
+        "first_seen": str(first_ts) if first_ts else None,
+        "last_seen": str(last_ts) if last_ts else None,
+        "distinct_dst_ports": len(distinct_dst_ports),
+        "distinct_dst_ips": len(distinct_dst_ips),
+    }
 
 
 def build_bundles(flags, all_records):
@@ -86,8 +132,22 @@ def build_bundles(flags, all_records):
             related,
             key=lambda r: r.get("_ts") or r.get("datetime") or "",
         )
-        entry["related_events"] = related_sorted
-        entry["related_event_count"] = len(related_sorted)
+
+        is_low_signal_only = bool(entry["categories"]) and set(entry["categories"]).issubset(config.LOW_SIGNAL_ONLY_CATEGORIES)
+        cap = config.MAX_RELATED_EVENTS_LOW_SIGNAL if is_low_signal_only else config.MAX_RELATED_EVENTS_HIGH_SIGNAL
+        sampled, truncated = _sample_events(related_sorted, cap)
+
+        entry["related_events"] = sampled
+        entry["related_event_count"] = len(related_sorted)  # TOTAL, not sample size
+        entry["related_events_truncated"] = truncated
+        if is_low_signal_only:
+            entry["related_events_stats"] = _aggregate_stats(related_sorted)
+        if truncated:
+            entry["related_events_note"] = (
+                f"showing {len(sampled)} of {len(related_sorted)} total related events "
+                f"(first/last split - see related_event_count for the true total"
+                + (", related_events_stats for aggregate detail)" if is_low_signal_only else ")")
+            )
         bundles.append(entry)
 
     return bundles
