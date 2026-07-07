@@ -69,6 +69,8 @@ class ActorDB:
                 "WHERE indicator=? AND type=?",
                 (now, json.dumps(cats), indicator, indicator_type),
             )
+
+    def commit(self):
         self.conn.commit()
 
     def all_actors(self):
@@ -100,4 +102,3 @@ class ActorDB:
             "INSERT OR IGNORE INTO known_outbound_destinations (dst_ip, first_seen) VALUES (?, ?)",
             (dst_ip, now),
         )
-        self.conn.commit()

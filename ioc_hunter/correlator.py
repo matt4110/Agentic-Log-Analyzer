@@ -17,17 +17,25 @@ IP_FIELDS_BY_SOURCE = {
 }
 
 
-def _record_matches_ip(record, ip):
-    source = record.get("_source")
-    fields = IP_FIELDS_BY_SOURCE.get(source, [])
-    return any(record.get(f) == ip for f in fields)
-
-
 def _record_matches_domain(record, domain):
     # Domains only ever showed up in free-text auth messages in this
     # pipeline; extend here if other sources gain a domain field later.
     msg = (record.get("message") or "")
     return domain.lower() in msg.lower()
+
+
+def _build_ip_index(flat_records):
+    index = {}
+    for r in flat_records:
+        source = r.get("_source")
+        fields = IP_FIELDS_BY_SOURCE.get(source, [])
+        seen_values = set()
+        for f in fields:
+            v = r.get(f)
+            if v and v not in seen_values:
+                index.setdefault(v, []).append(r)
+                seen_values.add(v)
+    return index
 
 
 def build_bundles(flags, all_records):
@@ -45,6 +53,10 @@ def build_bundles(flags, all_records):
         }
     """
     flat_records = [r for recs in all_records.values() for r in recs]
+    ip_index = _build_ip_index(flat_records)
+    # domains only ever show up in auth free-text messages - restrict the
+    # (rare) substring scan to that subset instead of every record
+    auth_records = all_records.get("auth", [])
 
     by_key = {}
     for flag in flags:
@@ -66,9 +78,9 @@ def build_bundles(flags, all_records):
     bundles = []
     for (indicator, itype), entry in by_key.items():
         if itype == "ip":
-            related = [r for r in flat_records if _record_matches_ip(r, indicator)]
+            related = ip_index.get(indicator, [])
         else:
-            related = [r for r in flat_records if _record_matches_domain(r, indicator)]
+            related = [r for r in auth_records if _record_matches_domain(r, indicator)]
 
         related_sorted = sorted(
             related,

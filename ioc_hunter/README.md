@@ -54,6 +54,21 @@ Feed the whole JSON file to an LLM for analysis, or read `flagged_indicators` yo
 | Large response / possible exfil | waf | flat byte ceiling + relative-to-median-for-that-path check, using the `size` field you added |
 | Domain observations | auth | best-effort regex extraction from free-text messages — sparse, since none of the four schemas has a dedicated domain field |
 
+## Splitting large reports for LLM analysis
+
+`main.py` writes one combined JSON report per day. On a busy internet-facing box this can get large fast — port-scan and blocked-connection noise alone can produce thousands of flagged indicators — and a large report will exceed any LLM's context window (25MB+ is roughly 6-8 million tokens, well past even the largest context models once you account for the model's own reasoning/output space).
+
+`chunk_report.py` splits the report without ever breaking apart one indicator's correlated events across two files — that would defeat the point of correlating them in the first place. It bin-packs whole actor bundles into size-bounded chunk files, plus writes a separate lightweight `summary.json` (every flagged indicator + reasons, no raw events) that's cheap enough to load first for a quick daily triage before deciding which detail chunks are worth feeding to an LLM.
+
+```bash
+python3 chunk_report.py ioc_output/ioc_report_2026-07-07.json --max-bytes 300000
+# writes ioc_output/chunks/summary.json, chunk_0001.json, chunk_0002.json, ...
+```
+
+`--max-bytes` defaults to 300,000 (~75-100k tokens depending on content) — a safe size that leaves headroom in a 200k-token context window for instructions and the model's response. Lower it if you're using a smaller-context model.
+
+Output is compact JSON (no pretty-printing) deliberately — indentation whitespace costs real tokens for no benefit to an LLM reading it.
+
 ## Tuning
 
 Everything you'll want to adjust lives in `config.py`:
@@ -71,6 +86,7 @@ ranges) — no separate whitelist to maintain.
 
 ```
 main.py          entry point — run this daily
+chunk_report.py  splits a large report into LLM-sized chunks (run after main.py if needed)
 config.py        all tunable thresholds, patterns, blocklists
 loaders.py       reads the 4 jsonl files, normalizes timestamps
 actor_db.py      SQLite running list of flagged indicators + outbound baseline
@@ -82,17 +98,3 @@ detectors/
   ufw.py         port scanning, repeated blocks, new outbound destinations
   waf.py         SQLi/cmdi/XSS/traversal, scanner UAs, IDOR heuristic, large responses
 ```
-
-## Known limitations worth knowing about
-
-- **auditd has no argv** — malware/reverse-shell detection there is a
-  binary-name/path blocklist, not real behavioral detection. A real
-  reverse shell using `/bin/bash` alone (not `nc`) won't be caught.
-- **WAF schema has no separated body/query string** — injection payloads
-  sent via POST body won't be visible; only what appears in `req_path`.
-- **IDOR heuristic has no session/user/ownership data** — it flags a
-  *pattern* (sequential ID enumeration with success responses), not
-  confirmed unauthorized access. Treat it as a lead, not a finding.
-- **Domain extraction is sparse** — only auth log free text ever contains
-  a domain-shaped string in your current schemas. If you want real domain
-  IOC coverage, the WAF parser would need to capture the `Host` header.

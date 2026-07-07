@@ -17,6 +17,7 @@ All args are optional and fall back to config.py defaults.
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timezone
 
 import config
@@ -39,23 +40,27 @@ def _json_default(o):
 
 
 def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
+    t0 = time.time()
     run_date = datetime.now(timezone.utc).isoformat()
 
     print(f"[info] loading logs...")
     records = load_all(auth_path, auditd_path, ufw_path, waf_path)
     for k, v in records.items():
         print(f"[info]   {k}: {len(v)} records")
+    print(f"[info] load complete ({time.time() - t0:.1f}s elapsed)")
 
+    db = ActorDB(db_path)
+
+    t1 = time.time()
     print("[info] merging auditd SYSCALL+EXECVE events and backfilling src_ip via session lookup...")
     merged_auditd = audit_merge.merge_events(records["auditd"], run_date=run_date)
     records["auditd_merged"] = merged_auditd
     attributed = sum(1 for e in merged_auditd if e.get("src_ip"))
     ambiguous = sum(1 for e in merged_auditd if e.get("src_ip_ses_reuse_ambiguous"))
     print(f"[info]   {len(merged_auditd)} exec events merged, {attributed} attributed to a src_ip"
-          f" ({ambiguous} with ambiguous session reuse)")
+          f" ({ambiguous} with ambiguous session reuse) ({time.time() - t1:.1f}s elapsed)")
 
-    db = ActorDB(db_path)
-
+    t2 = time.time()
     print("[info] running detectors...")
     flags = []
     flags += auth_detectors.run_all(records["auth"])
@@ -64,14 +69,23 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
     flags += waf_detectors.run_all(records["waf"])
 
     flags = filter_local_flags(flags)
-    print(f"[info] {len(flags)} flags raised (after filtering local IPs)")
+    unique_indicators = len({(f.indicator, f.indicator_type) for f in flags})
+    print(f"[info] {len(flags)} flags raised across {unique_indicators} unique indicators"
+          f" (after filtering local IPs) ({time.time() - t2:.1f}s elapsed)")
 
-    # update the running actor list
+    # update the running actor list (single commit at the end - see
+    # actor_db.py docstring on why per-call commits were the real bottleneck)
+    t2b = time.time()
     for flag in flags:
         db.upsert_actor(flag.indicator, flag.indicator_type, flag.category, run_date=run_date)
+    db.commit()
+    print(f"[info] actor DB updated ({time.time() - t2b:.1f}s elapsed)")
 
+    t3 = time.time()
+    print(f"[info] correlating {unique_indicators} indicators against {sum(len(v) for v in records.values())} total records...")
     bundles = build_bundles(flags, records)
     timeline = combined_timeline(bundles)
+    print(f"[info] correlation complete ({time.time() - t3:.1f}s elapsed)")
 
     os.makedirs(outdir, exist_ok=True)
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -102,6 +116,7 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
 
     print(f"[info] wrote combined report: {out_path}")
     print(f"[info] running actor list now has {len(db.all_actors())} entries in {db_path}")
+    print(f"[info] total run time: {time.time() - t0:.1f}s")
 
     db.close()
     return out_path
