@@ -4,16 +4,16 @@ Central configuration for the IOC hunter.
 Tune thresholds here as you see real traffic. Nothing here is sacred -
 these are reasonable starting points for a small web server.
 """
-
+from datetime import date
 import re
 
 # ---------------------------------------------------------------------------
 # Paths (override via CLI args in main.py if you'd rather not edit this file)
 # ---------------------------------------------------------------------------
-AUTH_LOG_PATH = "auth_parsed.jsonl"
-AUDITD_LOG_PATH = "auditd_parsed.jsonl"
-UFW_LOG_PATH = "ufw_parsed.jsonl"
-WAF_LOG_PATH = "safeline_parsed.jsonl"
+AUTH_LOG_PATH = f"/var/log/parsed/auth-{current_date}.jsonl"
+AUDITD_LOG_PATH = f"/var/log/parsed/auditd-{current_date}.jsonl"
+UFW_LOG_PATH = f"/var/log/parsed/ufw-{current_date}.jsonl"
+WAF_LOG_PATH = f"/var/log/parsed/safeline-{current_date}.jsonl"
 
 OUTPUT_DIR = "ioc_output"
 DB_PATH = "actors.db"
