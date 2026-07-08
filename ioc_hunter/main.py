@@ -104,6 +104,8 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
                 "type": b["type"],
                 "categories": b["categories"],
                 "reasons": b["reasons"],
+                "reason_count": b["reason_count"],
+                "reasons_truncated": b["reasons_truncated"],
                 "related_event_count": b["related_event_count"],
                 "related_events_truncated": b["related_events_truncated"],
                 "related_events_stats": b.get("related_events_stats"),

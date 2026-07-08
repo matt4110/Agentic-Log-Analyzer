@@ -197,7 +197,15 @@ LOW_SIGNAL_ONLY_CATEGORIES = {
 # much larger cap since completeness matters more there and they're
 # rarely voluminous anyway.
 MAX_RELATED_EVENTS_LOW_SIGNAL = 3
-MAX_RELATED_EVENTS_HIGH_SIGNAL = 200
+MAX_RELATED_EVENTS_HIGH_SIGNAL = 100
+
+# Several detectors (WAF injection/XSS/traversal, scanner UA, reverse-shell
+# argv, setuid escalation) emit one Flag PER matching record with no
+# grouping - an attacker retrying the same payload hundreds of times in a
+# day produces hundreds of near-identical reason strings for one indicator,
+# completely unbounded by the related_events cap above. Cap and dedupe
+# separately.
+MAX_REASONS_PER_INDICATOR = 15
 
 # ---------------------------------------------------------------------------
 # ses -> src_ip backfill sanity limits

@@ -45,6 +45,22 @@ def _build_ip_index(flat_records):
     return index
 
 
+def _cap_reasons(reasons, cap):
+    """
+    Dedupe exact-duplicate reason strings (common when the same payload is
+    retried many times), then cap to a first/last sample. Total count is
+    preserved separately so nothing is silently hidden.
+    """
+    total = len(reasons)
+    deduped = list(dict.fromkeys(reasons))  # order-preserving dedupe
+    if len(deduped) <= cap:
+        return deduped, total, len(deduped) < total
+    head = cap // 2
+    tail = cap - head
+    capped = deduped[:head] + deduped[-tail:]
+    return capped, total, True
+
+
 def _sample_events(related_sorted, cap):
     """
     If under cap, return everything. Otherwise keep a first-half/last-half
@@ -123,6 +139,19 @@ def build_bundles(flags, all_records):
 
     bundles = []
     for (indicator, itype), entry in by_key.items():
+        raw_reason_count = len(entry["reasons"])
+        capped_reasons, total_reasons, reasons_truncated = _cap_reasons(
+            entry["reasons"], config.MAX_REASONS_PER_INDICATOR
+        )
+        entry["reasons"] = capped_reasons
+        entry["reason_count"] = total_reasons  # true total, always uncapped
+        entry["reasons_truncated"] = reasons_truncated
+        if reasons_truncated:
+            entry["reasons_note"] = (
+                f"showing {len(capped_reasons)} of {total_reasons} triggering events "
+                f"(deduped + first/last sample)"
+            )
+
         if itype == "ip":
             related = ip_index.get(indicator, [])
         else:

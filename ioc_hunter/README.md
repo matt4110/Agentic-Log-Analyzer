@@ -102,6 +102,10 @@ Any bundle with at least one higher-signal category (SQLi, reverse shell, malwar
 
 In testing this took a 24MB report down to ~5MB and a 69-chunk output down to 13 chunks, for the same underlying data. Both caps and the low-signal category list are in `config.py` - tune them if you want more/less detail.
 
+**Second cap needed - `reasons` isn't covered by the events cap.** Several detectors (WAF injection/XSS/traversal, scanner UA, reverse-shell argv, setuid escalation) emit one `Flag` per matching record with no grouping. An attacker retrying the same payload hundreds of times in a day - very common for automated SQLi/scanner tools - produces hundreds of near-identical reason strings for one indicator, completely unbounded by `MAX_RELATED_EVENTS_*`. In testing, 500 repeated SQLi attempts from one IP alone produced 1,001 flags and 94KB of reason text before this fix.
+
+`reasons` is now deduped (exact-duplicate strings collapsed) and capped to `MAX_REASONS_PER_INDICATOR` (default 15, first/last sample), with `reason_count` always showing the true total and `reasons_truncated` flagging when trimming happened - same pattern as the events cap.
+
 ## Splitting large reports for LLM analysis
 
 `main.py` writes one combined JSON report per day. On a busy internet-facing box this can get large fast — port-scan and blocked-connection noise alone can produce thousands of flagged indicators — and a large report will exceed any LLM's context window (25MB+ is roughly 6-8 million tokens, well past even the largest context models once you account for the model's own reasoning/output space).

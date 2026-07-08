@@ -61,7 +61,11 @@ def build_bundles_from_report(report):
             "type": meta["type"],
             "categories": meta["categories"],
             "reasons": meta["reasons"],
+            "reason_count": meta.get("reason_count"),
+            "reasons_truncated": meta.get("reasons_truncated"),
             "related_event_count": meta["related_event_count"],
+            "related_events_truncated": meta.get("related_events_truncated"),
+            "related_events_stats": meta.get("related_events_stats"),
             "events": events_by_indicator.get(indicator, []),
         })
     return bundles
