@@ -10,6 +10,9 @@ import re
 # ---------------------------------------------------------------------------
 # Paths (override via CLI args in main.py if you'd rather not edit this file)
 # ---------------------------------------------------------------------------
+
+current_date = date.today().isoformat()
+
 AUTH_LOG_PATH = f"/var/log/parsed/auth-{current_date}.jsonl"
 AUDITD_LOG_PATH = f"/var/log/parsed/auditd-{current_date}.jsonl"
 UFW_LOG_PATH = f"/var/log/parsed/ufw-{current_date}.jsonl"
