@@ -73,17 +73,33 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
     print(f"[info] {len(flags)} flags raised across {unique_indicators} unique indicators"
           f" (after filtering local IPs) ({time.time() - t2:.1f}s elapsed)")
 
+    # --- actor history enrichment (BEFORE upserting this run's flags, so
+    # history reflects prior runs only): "first time ever seen" vs "flagged
+    # 14 of the last 20 days, previously for SQLi" is the cheapest, most
+    # deterministic triage signal available - never make the LLM infer what
+    # Python can look up.
+    unique_keys = {(f.indicator, f.indicator_type) for f in flags}
+    history = {}
+    for indicator, itype in unique_keys:
+        h = db.get_actor(indicator, itype)
+        history[(indicator, itype)] = h  # None = never seen before
+
     # update the running actor list (single commit at the end - see
     # actor_db.py docstring on why per-call commits were the real bottleneck)
     t2b = time.time()
     for flag in flags:
         db.upsert_actor(flag.indicator, flag.indicator_type, flag.category, run_date=run_date)
+    db.increment_days_seen(unique_keys)
     db.commit()
     print(f"[info] actor DB updated ({time.time() - t2b:.1f}s elapsed)")
 
     t3 = time.time()
     print(f"[info] correlating {unique_indicators} indicators against {sum(len(v) for v in records.values())} total records...")
     bundles = build_bundles(flags, records)
+    for b in bundles:
+        h = history.get((b["indicator"], b["type"]))
+        b["known_actor"] = h is not None
+        b["actor_history"] = h  # None if first time ever seen
     timeline = combined_timeline(bundles)
     print(f"[info] correlation complete ({time.time() - t3:.1f}s elapsed)")
 
@@ -109,6 +125,8 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
                 "related_event_count": b["related_event_count"],
                 "related_events_truncated": b["related_events_truncated"],
                 "related_events_stats": b.get("related_events_stats"),
+                "known_actor": b["known_actor"],
+                "actor_history": b["actor_history"],
             }
             for b in bundles
         ],

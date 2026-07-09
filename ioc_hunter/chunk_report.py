@@ -1,150 +1,172 @@
 #!/usr/bin/env python3
 """
-Split a large ioc_report_*.json into LLM-sized pieces without ever
-splitting one flagged indicator's correlated events across two files -
-that would defeat the point of correlating them in the first place.
+Split a large ioc_report_*.json into LLM-sized pieces for local analysis.
 
-Produces, in an output directory:
-  summary.json          - every flagged indicator + reasons, NO raw events.
-                           Small enough to always load in full; use it to
-                           decide which detail chunk(s) are worth reading.
-  chunk_0001.json, ...   - each holds one or more complete actor bundles
-                           (indicator + all its related events across all
-                           4 log sources), packed greedily up to --max-bytes.
+Two things happen here, both tuned for a small locally-hosted model:
+
+  1. Signal routing. Indicators whose categories are ENTIRELY low-signal
+     (port scans, blocked connections, new outbound - internet background
+     noise) are NOT given per-indicator analysis. They go into one compact
+     aggregate table the model scans for anomalies. Only high-signal
+     indicators (SQLi, reverse shell, privesc, malware, exfil, etc.) get
+     full per-bundle chunks. This stops a 20B model from dutifully writing
+     "this is a port scan" 2,800 times and burning your inference budget.
+
+  2. Compact text rendering (--format text, the default). Events are
+     rendered as one line each instead of verbose JSON - ~4-6x fewer
+     tokens, and easier for a small model to read. Use --format json to
+     keep the original JSON bundle structure for archival/programmatic use.
+
+Outputs, in the chunk directory:
+  low_signal_table.txt   - aggregate table of all noise indicators
+  chunk_0001.txt, ...    - high-signal bundles, packed under --max-bytes
+  (or .json equivalents with --format json)
 
 Usage:
-    python3 chunk_report.py ioc_output/ioc_report_2026-07-07.json \\
-        --outdir ioc_output/chunks --max-bytes 300000
+    python3 chunk_report.py ioc_output/ioc_report_2026-07-07.json
+    python3 chunk_report.py report.json --max-bytes 48000 --format text
 """
 
 import argparse
 import json
 import os
 
-
-def _bundle_size(bundle):
-    return len(_dumps(bundle))
+import config
+from render import render_bundle, render_low_signal_row
 
 
 def _dumps(obj):
-    """Compact JSON - no indentation. This matters twice here: it makes
-    the size estimate used for packing match what actually gets written
-    (indent=2 was inflating real chunk sizes ~50-80% past what packing
-    targeted), and it avoids burning LLM context tokens on whitespace
-    that carries no information for machine consumption."""
     return json.dumps(obj, default=str, separators=(",", ":"))
 
 
 def build_bundles_from_report(report):
     """
-    The combined report's `timeline` is deduplicated across indicators (one
-    event can be tagged with multiple indicators). Rebuild one bundle per
-    indicator so each chunk can be self-contained; an event touching two
-    indicators that land in different chunks will appear in both - a small,
-    deliberate duplication in exchange for never truncating an actor's
-    context.
+    Rebuild one bundle per indicator from the report's deduplicated
+    timeline. An event touching two indicators that land in different
+    chunks appears in both - deliberate duplication so each chunk is
+    self-contained.
     """
     indicator_meta = {f["indicator"]: f for f in report["flagged_indicators"]}
     events_by_indicator = {ind: [] for ind in indicator_meta}
 
-    for entry in report["timeline"]:
+    for entry in report.get("timeline", []):
         for tag in entry["indicators"]:
-            # tag format is "1.2.3.4 (ip)" or "evil.com (domain)"
             indicator = tag.rsplit(" (", 1)[0]
             if indicator in events_by_indicator:
                 events_by_indicator[indicator].append(entry["event"])
 
     bundles = []
     for indicator, meta in indicator_meta.items():
-        bundles.append({
-            "indicator": indicator,
-            "type": meta["type"],
-            "categories": meta["categories"],
-            "reasons": meta["reasons"],
-            "reason_count": meta.get("reason_count"),
-            "reasons_truncated": meta.get("reasons_truncated"),
-            "related_event_count": meta["related_event_count"],
-            "related_events_truncated": meta.get("related_events_truncated"),
-            "related_events_stats": meta.get("related_events_stats"),
-            "events": events_by_indicator.get(indicator, []),
-        })
+        b = dict(meta)
+        b["events"] = events_by_indicator.get(indicator, [])
+        bundles.append(b)
     return bundles
 
 
-def pack_chunks(bundles, max_bytes):
-    """Greedy bin-packing: fill each chunk up to max_bytes, never split a
-    single bundle. A bundle bigger than max_bytes on its own gets its own
-    oversized chunk (rare - e.g. a very noisy single scanning IP) rather
-    than being silently truncated.
+def is_low_signal(bundle):
+    cats = set(bundle.get("categories", []))
+    return bool(cats) and cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES)
 
-    Includes a per-bundle overhead estimate for the `indicators_in_chunk`
-    wrapper list the final file also carries - without it, chunks with
-    many small bundles packed together consistently ran ~1-2% over
-    max_bytes once that wrapper was added at write time.
-    """
-    OVERHEAD_PER_BUNDLE = 40  # covers the indicator string + JSON list punctuation in the wrapper
-    bundles_sorted = sorted(bundles, key=_bundle_size, reverse=True)
-    chunks = []
-    current, current_size = [], 0
 
-    for bundle in bundles_sorted:
-        size = _bundle_size(bundle) + OVERHEAD_PER_BUNDLE
+def _bundle_text(bundle):
+    return render_bundle(bundle)
+
+
+def pack_text_chunks(bundles, max_bytes):
+    """Greedy pack rendered-text bundles under max_bytes, never splitting
+    a bundle. Oversized single bundles get their own chunk."""
+    rendered = [(b, _bundle_text(b)) for b in bundles]
+    rendered.sort(key=lambda p: len(p[1]), reverse=True)
+
+    chunks, current, current_size = [], [], 0
+    SEP = "\n\n"
+    for b, text in rendered:
+        size = len(text) + len(SEP)
         if current and current_size + size > max_bytes:
             chunks.append(current)
             current, current_size = [], 0
-        current.append(bundle)
+        current.append((b, text))
         current_size += size
-
     if current:
         chunks.append(current)
     return chunks
 
 
-def run(report_path, outdir, max_bytes):
+def pack_json_chunks(bundles, max_bytes):
+    OVERHEAD = 40
+    bundles_sorted = sorted(bundles, key=lambda b: len(_dumps(b)), reverse=True)
+    chunks, current, current_size = [], [], 0
+    for b in bundles_sorted:
+        size = len(_dumps(b)) + OVERHEAD
+        if current and current_size + size > max_bytes:
+            chunks.append(current)
+            current, current_size = [], 0
+        current.append(b)
+        current_size += size
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def run(report_path, outdir, max_bytes, fmt):
     with open(report_path, "r", encoding="utf-8") as f:
         report = json.load(f)
 
     os.makedirs(outdir, exist_ok=True)
-
-    summary = {
-        "run_date": report.get("run_date"),
-        "summary": report.get("summary"),
-        "flagged_indicators": report.get("flagged_indicators"),
-    }
-    summary_path = os.path.join(outdir, "summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        f.write(_dumps(summary))
-    print(f"[info] wrote {summary_path} ({os.path.getsize(summary_path)} bytes)")
-
     bundles = build_bundles_from_report(report)
-    chunks = pack_chunks(bundles, max_bytes)
 
-    for i, chunk in enumerate(chunks, 1):
-        chunk_path = os.path.join(outdir, f"chunk_{i:04d}.json")
-        payload = {"indicators_in_chunk": [b["indicator"] for b in chunk], "bundles": chunk}
-        with open(chunk_path, "w", encoding="utf-8") as f:
-            f.write(_dumps(payload))
-        size = os.path.getsize(chunk_path)
-        if size > max_bytes:
-            flag = " [OVERSIZED - single bundle larger than target]" if len(chunk) == 1 else " [OVERSIZED - unexpected, investigate]"
-        else:
-            flag = ""
-        print(f"[info] wrote {chunk_path}: {len(chunk)} indicator(s), {size} bytes{flag}")
+    high = [b for b in bundles if not is_low_signal(b)]
+    low = [b for b in bundles if is_low_signal(b)]
 
-    print(f"[info] {len(bundles)} indicators packed into {len(chunks)} chunk(s) "
-          f"(target max {max_bytes} bytes/chunk)")
+    # --- low-signal aggregate table (always compact text) ---------------
+    table_path = os.path.join(outdir, "low_signal_table.txt")
+    with open(table_path, "w", encoding="utf-8") as f:
+        f.write("# Low-signal indicators (presumed internet background noise).\n")
+        f.write("# Scan for anomalies: unusually high port/dst counts, known repeat actors,\n")
+        f.write("# or activity clustered oddly in time. Format:\n")
+        f.write("# indicator | categories | events | distinct_ports | distinct_dsts | time_range | actor\n\n")
+        for b in sorted(low, key=lambda x: x.get("related_event_count", 0), reverse=True):
+            f.write(render_low_signal_row(b) + "\n")
+    print(f"[info] wrote {table_path}: {len(low)} low-signal indicators, {os.path.getsize(table_path)} bytes")
+
+    # --- high-signal per-bundle chunks ----------------------------------
+    ext = "txt" if fmt == "text" else "json"
+    if fmt == "text":
+        chunks = pack_text_chunks(high, max_bytes)
+        for i, chunk in enumerate(chunks, 1):
+            path = os.path.join(outdir, f"chunk_{i:04d}.{ext}")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n\n".join(text for _, text in chunk))
+            size = os.path.getsize(path)
+            note = " [OVERSIZED - single large bundle]" if size > max_bytes and len(chunk) == 1 else ""
+            print(f"[info] wrote {path}: {len(chunk)} indicator(s), {size} bytes{note}")
+    else:
+        chunks = pack_json_chunks(high, max_bytes)
+        for i, chunk in enumerate(chunks, 1):
+            path = os.path.join(outdir, f"chunk_{i:04d}.{ext}")
+            payload = {"indicators_in_chunk": [b["indicator"] for b in chunk], "bundles": chunk}
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(_dumps(payload))
+            size = os.path.getsize(path)
+            note = " [OVERSIZED - single large bundle]" if size > max_bytes and len(chunk) == 1 else ""
+            print(f"[info] wrote {path}: {len(chunk)} indicator(s), {size} bytes{note}")
+
+    print(f"[info] {len(high)} high-signal indicators in {len(chunks)} chunk(s), "
+          f"{len(low)} low-signal in 1 aggregate table (target {max_bytes} bytes/chunk, format={fmt})")
 
 
 def main():
-    p = argparse.ArgumentParser(description="Split a large ioc_report JSON into LLM-sized chunks")
+    p = argparse.ArgumentParser(description="Split an ioc_report into LLM-sized chunks with signal routing")
     p.add_argument("report", help="path to ioc_report_*.json")
     p.add_argument("--outdir", default=None, help="defaults to <report_dir>/chunks")
-    p.add_argument("--max-bytes", type=int, default=300_000,
-                    help="target max size per chunk file, in bytes (default 300000 ~ roughly 75-100k tokens)")
+    p.add_argument("--max-bytes", type=int, default=config.CHUNK_MAX_BYTES_DEFAULT,
+                   help=f"target max size per chunk (default {config.CHUNK_MAX_BYTES_DEFAULT}, sized for a local 20B model)")
+    p.add_argument("--format", choices=["text", "json"], default="text",
+                   help="text = compact one-line events for LLM (default); json = original structure for archival")
     args = p.parse_args()
 
     outdir = args.outdir or os.path.join(os.path.dirname(args.report) or ".", "chunks")
-    run(args.report, outdir, args.max_bytes)
+    run(args.report, outdir, args.max_bytes, args.format)
 
 
 if __name__ == "__main__":

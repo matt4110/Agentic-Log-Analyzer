@@ -35,12 +35,48 @@ class ActorDB:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Add columns introduced after initial deployments. Safe to run on
+        both fresh and existing databases."""
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(actors)")}
+        if "days_seen" not in cols:
+            self.conn.execute("ALTER TABLE actors ADD COLUMN days_seen INTEGER NOT NULL DEFAULT 0")
 
     def close(self):
         self.conn.close()
 
     # -- actors -------------------------------------------------------
+    def get_actor(self, indicator, indicator_type):
+        """History lookup for report enrichment. Call BEFORE upserting the
+        current run's flags so the returned history reflects prior runs,
+        not the run in progress."""
+        cur = self.conn.execute(
+            "SELECT first_seen, last_seen, categories, hit_count, days_seen "
+            "FROM actors WHERE indicator=? AND type=?",
+            (indicator, indicator_type),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "first_seen": row[0],
+            "last_seen": row[1],
+            "historical_categories": json.loads(row[2]),
+            "hit_count": row[3],
+            "days_seen": row[4],
+        }
+
+    def increment_days_seen(self, indicators):
+        """Bump days_seen once per run for each unique (indicator, type).
+        Call once per daily run, after upserts, with the run's unique set."""
+        self.conn.executemany(
+            "UPDATE actors SET days_seen = days_seen + 1 WHERE indicator=? AND type=?",
+            list(indicators),
+        )
+
     def upsert_actor(self, indicator, indicator_type, category, run_date=None):
         """
         Add or update a flagged indicator. `category` is a single detector

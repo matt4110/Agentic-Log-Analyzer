@@ -89,6 +89,42 @@ This backfill is deliberately conservative: if a given `ses` value is associated
 
 The tool allowlists live in `config.py`: `KNOWN_PRIVESC_TOOLS` (sudo/su/pkexec/doas) and `KNOWN_SYSTEM_DAEMONS` (sshd/systemd/cron/etc.) — add anything specific to your stack.
 
+## Feeding results to a local LLM (Ollama)
+
+The full daily pipeline is three steps:
+
+```bash
+# 1. detect + correlate + write the raw report
+python3 main.py --auth ... --auditd ... --ufw ... --waf ... --outdir ioc_output --db actors.db
+
+# 2. split into LLM-sized, signal-routed chunks (compact text by default)
+python3 chunk_report.py ioc_output/ioc_report_2026-07-09.json
+
+# 3. analyze with the local model and write the daily report
+python3 llm_analyze.py ioc_output/chunks --out ioc_output/daily_report.md
+```
+
+These steps are tuned specifically for a locally-hosted ~20B model (e.g. `gpt-oss:20b` on Ollama), which behaves differently from a frontier API model:
+
+**Chunk size (`config.CHUNK_MAX_BYTES_DEFAULT`, default 48000 ≈ 12k tokens).** Small models degrade on long-context retrieval - they lose details in the middle and start conflating indicators between bundles - and CPU prompt processing at 75k+ tokens takes minutes per call. Small chunks are both more accurate and faster here. (Frontier API models can take 300000+; this default is deliberately small.)
+
+**Compact text rendering (`render.py`, `chunk_report.py --format text`).** Events are rendered one line each instead of verbose JSON - roughly 4-6x fewer tokens and easier for a small model to parse. `mac`, `tos`, `ttl`, `ip_flags`, `total_len`, `in_iface` and similar fields with no analytical value are dropped entirely. Use `--format json` if you want the original structure for archival or a different consumer.
+
+**Signal routing.** Indicators whose categories are *entirely* low-signal (port scans, blocked connections, new outbound) do NOT get per-indicator LLM analysis - they'd waste the whole inference budget having the model write "this is a port scan" thousands of times. They collapse into one `low_signal_table.txt` the model is told to scan for anomalies. Only high-signal indicators (SQLi, reverse shell, privesc, malware, exfil, XSS, etc.) get full `chunk_*.txt` analysis. You accepted this category-based routing tradeoff explicitly; the category set is `config.LOW_SIGNAL_ONLY_CATEGORIES`.
+
+**Actor history enrichment.** Each bundle now carries `known_actor` / `actor_history` pulled from `actors.db` (prior runs only) - "first time ever seen" vs "flagged 14 of the last 20 days, previously for SQLi" is the cheapest, most deterministic triage signal there is, and it's looked up in Python rather than left for the LLM to infer. Requires the `days_seen` column, which `actor_db.py` adds automatically to existing databases on first run.
+
+### `llm_analyze.py` design
+
+Map-reduce: one call per high-signal chunk produces validated JSON findings (MAP), then one final call synthesizes the markdown daily report (REDUCE).
+
+Guards, because a local 20B model needs them more than a frontier model does:
+- **Indicator validation**: every indicator the model cites is checked against the indicators actually present in that chunk. Invented or mutated IPs are dropped and logged, never reaching the final report. The dropped list is preserved in an HTML comment at the bottom of the report for auditability.
+- **Strict JSON schema** from the MAP step with one few-shot example; invalid output retries (`config.LLM_MAX_RETRIES`) then skips the chunk (saving the raw text to `llm_debug/`) rather than crashing the run.
+- **Low temperature** (`config.LLM_TEMPERATURE`, default 0.2) and explicit instructions against naming threat actors, malware families, or CVEs unless that string appears in the evidence - small models confabulate attribution readily.
+
+Config (all in `config.py`, overridable via CLI flags): `LLM_BASE_URL` (default `http://localhost:11434/v1`, Ollama's OpenAI-compatible endpoint), `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`. No API key needed for local Ollama. The OpenAI-compatible shape means llama.cpp server and LM Studio work too by changing `--base-url`.
+
 ## Handling high-volume, low-signal indicators (port scans, blocked connections)
 
 At real-world scale, the vast majority of flagged indicators on an internet-facing box are routine scanning noise (`port_scan`, `repeated_blocked_connections`, `unusual_outbound`) - and a single persistent scanning bot can generate hundreds of near-identical blocked-packet log lines in a day. Dumping all of them into the report doesn't add analytical value (an LLM doesn't need to see 400 individual SYN packets) and bloats file size dramatically - in testing, this alone was responsible for most of a 24MB report.
@@ -148,8 +184,10 @@ ranges) — no separate whitelist to maintain.
 ## Files
 
 ```
-main.py          entry point — run this daily
-chunk_report.py  splits a large report into LLM-sized chunks (run after main.py if needed)
+main.py          entry point — run this daily (step 1)
+chunk_report.py  splits report into LLM-sized, signal-routed chunks (step 2)
+llm_analyze.py   map-reduce analysis via local Ollama model -> daily report (step 3)
+render.py        compact one-line text rendering of events/bundles for LLM input
 config.py        all tunable thresholds, patterns, blocklists
 loaders.py       reads the 4 jsonl files, normalizes timestamps
 actor_db.py      SQLite running list of flagged indicators + outbound baseline

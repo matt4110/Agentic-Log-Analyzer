@@ -4,19 +4,16 @@ Central configuration for the IOC hunter.
 Tune thresholds here as you see real traffic. Nothing here is sacred -
 these are reasonable starting points for a small web server.
 """
-from datetime import date
+
 import re
 
 # ---------------------------------------------------------------------------
 # Paths (override via CLI args in main.py if you'd rather not edit this file)
 # ---------------------------------------------------------------------------
-
-current_date = date.today().isoformat()
-
-AUTH_LOG_PATH = f"/var/log/parsed/auth-{current_date}.jsonl"
-AUDITD_LOG_PATH = f"/var/log/parsed/auditd-{current_date}.jsonl"
-UFW_LOG_PATH = f"/var/log/parsed/ufw-{current_date}.jsonl"
-WAF_LOG_PATH = f"/var/log/parsed/safeline-{current_date}.jsonl"
+AUTH_LOG_PATH = "auth_parsed.jsonl"
+AUDITD_LOG_PATH = "auditd_parsed.jsonl"
+UFW_LOG_PATH = "ufw_parsed.jsonl"
+WAF_LOG_PATH = "safeline_parsed.jsonl"
 
 OUTPUT_DIR = "ioc_output"
 DB_PATH = "actors.db"
@@ -148,6 +145,24 @@ DOMAIN_CANDIDATE_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# LLM analysis settings (llm_analyze.py)
+# Defaults target a locally hosted model behind an OpenAI-compatible API
+# (Ollama, llama.cpp server, LM Studio all expose /v1/chat/completions).
+# ---------------------------------------------------------------------------
+LLM_BASE_URL = "http://localhost:11434/v1"   # Ollama default
+LLM_MODEL = "gpt-oss:20b"
+LLM_TEMPERATURE = 0.2       # low - we want consistent, schema-conformant output
+LLM_MAX_RETRIES = 2         # per-chunk retries on invalid JSON output
+LLM_TIMEOUT_SECONDS = 600   # CPU inference is slow; don't time out prematurely
+
+# Default chunk size target, in bytes. ~4 chars/token, so 48000 bytes is
+# roughly 12k tokens - sized for a local 20B model where (a) CPU prompt
+# processing at 75k+ tokens takes minutes per chunk and (b) small models
+# degrade on long-context retrieval, conflating details between bundles.
+# Frontier API models can handle 300000+; local models should stay small.
+CHUNK_MAX_BYTES_DEFAULT = 48_000
+
+# ---------------------------------------------------------------------------
 # Reverse-shell / malicious-command patterns matched against reconstructed
 # EXECVE argv (joined as `cmdline`). This is where actual command-line
 # content lets us catch things an exe-name blocklist can't - e.g. a plain
@@ -200,7 +215,7 @@ LOW_SIGNAL_ONLY_CATEGORIES = {
 # much larger cap since completeness matters more there and they're
 # rarely voluminous anyway.
 MAX_RELATED_EVENTS_LOW_SIGNAL = 3
-MAX_RELATED_EVENTS_HIGH_SIGNAL = 100
+MAX_RELATED_EVENTS_HIGH_SIGNAL = 200
 
 # Several detectors (WAF injection/XSS/traversal, scanner UA, reverse-shell
 # argv, setuid escalation) emit one Flag PER matching record with no
