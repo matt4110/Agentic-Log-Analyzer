@@ -1,0 +1,6 @@
+Infrastructure Config/Certbot/Auditd/security.rules
+Infrastructure Config/Certbot/setup.md
+Infrastructure Config/Rsyslog/99-log-forwarding.conf
+Infrastructure Config/Rsyslog/rsyslog.conf
+Infrastructure Config/WireGuard/Host-wg0-config.md
+Infrastructure Config/WireGuard/Server-wg0-config.md
