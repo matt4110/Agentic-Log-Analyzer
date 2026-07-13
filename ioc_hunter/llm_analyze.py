@@ -44,21 +44,34 @@ INDICATOR_HEADER_RE = re.compile(r"^### INDICATOR:\s*(\S+)", re.MULTILINE)
 # ---------------------------------------------------------------------------
 # LLM transport (Ollama OpenAI-compatible endpoint)
 # ---------------------------------------------------------------------------
-def call_llm(base_url, model, system, user, temperature, timeout, retries):
+def call_llm(base_url, model, messages, temperature, timeout, retries, force_json=False):
     """
-    POST to /chat/completions. Returns the assistant message text, or raises
-    after exhausting retries. No API key needed for local Ollama.
+    POST to /chat/completions with a full messages list. Returns the
+    assistant message text, or raises after exhausting retries. No API key
+    needed for local Ollama.
+
+    Sends gpt-oss reasoning-model controls (num_predict, reasoning_effort).
+    force_json enables Ollama's JSON-object mode - use for the MAP step
+    (structured findings) but NOT the REDUCE step (which emits markdown).
+    Falls back to the `reasoning` field if `content` comes back empty - a
+    reasoning model that hits its token ceiling may leave the answer only
+    in reasoning.
     """
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
         "temperature": temperature,
         "stream": False,
+        "max_tokens": config.LLM_NUM_PREDICT,   # OpenAI-compat name for num_predict
     }
+    # gpt-oss reasoning-effort control (Ollama passes this through)
+    if getattr(config, "LLM_REASONING_EFFORT", None):
+        payload["reasoning_effort"] = config.LLM_REASONING_EFFORT
+    # Ollama structured-output: constrain to valid JSON (MAP step only)
+    if force_json and getattr(config, "LLM_FORCE_JSON", False):
+        payload["response_format"] = {"type": "json_object"}
+
     data = json.dumps(payload).encode("utf-8")
 
     last_err = None
@@ -67,7 +80,18 @@ def call_llm(base_url, model, system, user, temperature, timeout, retries):
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-                return body["choices"][0]["message"]["content"]
+                msg = body["choices"][0]["message"]
+                content = msg.get("content") or ""
+                # fallback: reasoning models sometimes leave the answer only
+                # in the reasoning channel when content is empty/truncated
+                if not content.strip():
+                    content = msg.get("reasoning") or ""
+                finish = body["choices"][0].get("finish_reason")
+                if finish == "length":
+                    print(f"[warn]   model hit token limit (finish_reason=length) - "
+                          f"answer may be truncated; consider raising LLM_NUM_PREDICT or "
+                          f"shrinking chunks")
+                return content
         except Exception as e:  # noqa - transport errors are varied; we retry all
             last_err = e
             if attempt < retries:
@@ -140,11 +164,18 @@ def parse_map_output(raw):
 
 def analyze_chunk(chunk_text, args):
     valid_indicators = extract_indicators_from_chunk(chunk_text)
-    user = MAP_FEWSHOT_USER + "\n\n---\n\n" + MAP_FEWSHOT_ASSISTANT + "\n\n===\n\n" + \
-        "Now analyze the following. Respond with ONLY the JSON object.\n\n" + chunk_text
-
-    raw = call_llm(args.base_url, args.model, MAP_SYSTEM, user,
-                   args.temperature, args.timeout, args.retries)
+    # Proper conversation roles: system rules, a real user/assistant few-shot
+    # exchange, then the actual data as a fresh user turn. This stops the
+    # model reading the example as part of the task text (which produced
+    # essay-style output when everything was crammed into one user message).
+    messages = [
+        {"role": "system", "content": MAP_SYSTEM},
+        {"role": "user", "content": MAP_FEWSHOT_USER},
+        {"role": "assistant", "content": MAP_FEWSHOT_ASSISTANT},
+        {"role": "user", "content": chunk_text},
+    ]
+    raw = call_llm(args.base_url, args.model, messages,
+                   args.temperature, args.timeout, args.retries, force_json=True)
     parsed = parse_map_output(raw)
 
     findings = parsed.get("findings", [])
@@ -182,7 +213,11 @@ def synthesize_report(all_findings, low_signal_count, low_signal_note, args):
     }
     user = ("Findings and context (JSON):\n" + json.dumps(payload, default=str) +
             "\n\nWrite the daily markdown report now.")
-    return call_llm(args.base_url, args.model, REDUCE_SYSTEM, user,
+    messages = [
+        {"role": "system", "content": REDUCE_SYSTEM},
+        {"role": "user", "content": user},
+    ]
+    return call_llm(args.base_url, args.model, messages,
                     args.temperature, args.timeout, args.retries)
 
 
