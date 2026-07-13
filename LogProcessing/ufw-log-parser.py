@@ -5,7 +5,7 @@ current_date = date.today().isoformat()
 ufw_file = "/var/log/ufw.log.1"
 
 with open(ufw_file, "r") as logfile, \
-     open(f"/var/log/parsed/ufw-{current_date}.jsonl", "a") as jfile:
+     open(f"/var/log/parsed/{current_date}-ufw.jsonl", "a") as jfile:
 
     for line in logfile:
         if '[UFW' not in line:

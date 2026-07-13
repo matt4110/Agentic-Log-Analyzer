@@ -122,15 +122,27 @@ def render_low_signal_row(bundle):
     """
     One compact row for the aggregate low-signal table - no per-event
     detail, just the stats that distinguish noise from something worth a
-    second look.
+    second look. Network categories (port scans, blocked connections) show
+    port/destination spread; auth-based categories (brute force) show
+    failure volume instead, since ports/dsts are meaningless there.
     """
     stats = bundle.get("related_events_stats") or {}
     h = bundle.get("actor_history")
     known = "KNOWN" if bundle.get("known_actor") else "new"
-    return (f"{bundle['indicator']} | {','.join(bundle.get('categories', []))} | "
-            f"{bundle.get('related_event_count','?')} events | "
-            f"{stats.get('distinct_dst_ports','?')} ports | "
-            f"{stats.get('distinct_dst_ips','?')} dsts | "
-            f"{str(stats.get('first_seen',''))[11:19]}-{str(stats.get('last_seen',''))[11:19]} | "
-            f"{known}"
-            + (f" ({h.get('days_seen')}d)" if h else ""))
+    cats = ",".join(bundle.get("categories", []))
+    time_range = f"{str(stats.get('first_seen',''))[11:19]}-{str(stats.get('last_seen',''))[11:19]}"
+    actor = known + (f" ({h.get('days_seen')}d)" if h else "")
+
+    network_cats = {"port_scan", "repeated_blocked_connections", "unusual_outbound"}
+    is_network = bool(set(bundle.get("categories", [])) & network_cats)
+
+    if is_network:
+        return (f"{bundle['indicator']} | {cats} | "
+                f"{bundle.get('related_event_count','?')} events | "
+                f"{stats.get('distinct_dst_ports','?')} ports | "
+                f"{stats.get('distinct_dst_ips','?')} dsts | "
+                f"{time_range} | {actor}")
+    else:
+        return (f"{bundle['indicator']} | {cats} | "
+                f"{bundle.get('related_event_count','?')} events | "
+                f"{time_range} | {actor}")

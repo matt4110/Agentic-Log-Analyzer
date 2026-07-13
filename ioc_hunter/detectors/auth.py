@@ -45,6 +45,53 @@ def detect_brute_force(auth_records):
     return flags
 
 
+def detect_brute_force_success(auth_records):
+    """
+    The dangerous case, kept HIGH-signal: a source IP that produced enough
+    auth failures to look like brute force AND then had a SUCCESSFUL
+    authentication. That success-after-failures pattern is a likely
+    credential compromise - a real incident to investigate, not the
+    background noise that plain (all-failed) brute force is.
+
+    A success from an IP with no prior failures is normal login activity
+    and is NOT flagged here.
+    """
+    flags = []
+    threshold, _ = config.BRUTE_FORCE_THRESHOLD
+
+    # count failures and collect successes per src_ip
+    from collections import defaultdict
+    failures_by_ip = defaultdict(list)
+    successes_by_ip = defaultdict(list)
+    for r in auth_records:
+        msg = r.get("message") or ""
+        ip = r.get("src_ip")
+        if not ip:
+            continue
+        if config.AUTH_FAILURE_RE.search(msg):
+            failures_by_ip[ip].append(r)
+        elif config.AUTH_SUCCESS_RE.search(msg):
+            successes_by_ip[ip].append(r)
+
+    for ip, successes in successes_by_ip.items():
+        fails = failures_by_ip.get(ip, [])
+        if len(fails) >= threshold:
+            # evidence = the failures plus the success(es) that followed
+            evidence = sorted(fails + successes, key=lambda r: r.get("_ts") or "")
+            flags.append(Flag(
+                indicator=ip,
+                indicator_type="ip",
+                category="brute_force_success",
+                description=(
+                    f"POSSIBLE CREDENTIAL COMPROMISE: {ip} had {len(fails)} auth "
+                    f"failures then {len(successes)} successful authentication(s) - "
+                    f"investigate as likely successful brute force"
+                ),
+                evidence=evidence,
+            ))
+    return flags
+
+
 def detect_privilege_escalation(auth_records):
     """
     sudo/su escalation events surfaced from free-text messages. These
@@ -108,6 +155,7 @@ def extract_domains(auth_records):
 def run_all(auth_records):
     flags = []
     flags += detect_brute_force(auth_records)
+    flags += detect_brute_force_success(auth_records)
     flags += detect_privilege_escalation(auth_records)
     flags += detect_new_accounts(auth_records)
     flags += extract_domains(auth_records)

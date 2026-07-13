@@ -52,18 +52,32 @@ def detect_privilege_escalation(auditd_records):
 
         reason = None
 
-        # A. failed root escalation/auth attempt
-        if acct == "root" and res == "failed":
-            reason = "failed attempt to authenticate/escalate as root"
+        # A. failed root escalation attempt VIA A PRIVILEGE TOOL (sudo/su/etc).
+        # Deliberately NOT triggered by failed SSH logins: a failed sshd
+        # auth attempt has acct=root/res=failed too, but that's brute-force
+        # noise handled by the auth brute_force detector, not escalation.
+        # Requiring a privilege-tool exe keeps this to genuine "tried to
+        # become root and failed" events (repeated sudo failures, etc.).
+        if acct == "root" and res == "failed" and exe_base_lower in config.KNOWN_PRIVESC_TOOLS:
+            reason = f"failed attempt to escalate to root via {exe_base}"
 
-        # B. root PAM op via a non-standard tool
-        elif op in config.PRIVESC_OPS and acct == "root" and exe_base_lower not in config.KNOWN_PRIVESC_TOOLS:
+        # B. root PAM op via a non-standard tool (successful only - a failed
+        # op isn't a successful escalation)
+        elif (op in config.PRIVESC_OPS and acct == "root"
+              and res != "failed"
+              and exe_base_lower not in config.KNOWN_PRIVESC_TOOLS
+              and exe_base_lower not in config.KNOWN_SYSTEM_DAEMONS):
             reason = f"root privilege operation ({op}) claimed by non-standard tool '{exe_base}'"
 
-        # C. root with no traceable auid, from something other than a known daemon
+        # C. root with no traceable auid, from something other than a known
+        # daemon - a common signature of an exploited SUID binary. Excludes
+        # res=failed: a FAILED action running as root pre-auth (exactly what
+        # sshd does on every rejected login) is not an escalation. Only a
+        # SUCCESSFUL root action with no audit trail is suspicious.
         elif (
             str(uid) == "0"
             and str(auid) in ("-1", "4294967295", "unset", "None")
+            and res != "failed"
             and exe_base_lower not in config.KNOWN_SYSTEM_DAEMONS
             and exe_base_lower not in config.KNOWN_PRIVESC_TOOLS
         ):

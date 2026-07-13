@@ -19,7 +19,7 @@ port_pattern = re.compile(r'\bport (\d+)')
 proc_pattern = re.compile(r'^([\w\-.]+)\[(\d+)\]:$')
 
 with open(auth_file, "r") as logfile, \
-     open(f"/var/log/parsed/auth-{current_date}.jsonl", "a") as jfile:
+     open(f"/var/log/parsed/{current_date}-auth.jsonl", "a") as jfile:
 
     for line in logfile:
         if 'sshd' not in line:

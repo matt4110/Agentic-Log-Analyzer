@@ -122,9 +122,10 @@ def run(report_path, outdir, max_bytes, fmt):
     table_path = os.path.join(outdir, "low_signal_table.txt")
     with open(table_path, "w", encoding="utf-8") as f:
         f.write("# Low-signal indicators (presumed internet background noise).\n")
-        f.write("# Scan for anomalies: unusually high port/dst counts, known repeat actors,\n")
-        f.write("# or activity clustered oddly in time. Format:\n")
-        f.write("# indicator | categories | events | distinct_ports | distinct_dsts | time_range | actor\n\n")
+        f.write("# Scan for anomalies: unusually high port/dst counts, high event volume,\n")
+        f.write("# known repeat actors, or activity clustered oddly in time.\n")
+        f.write("# Network rows:  indicator | categories | events | distinct_ports | distinct_dsts | time_range | actor\n")
+        f.write("# Auth rows:     indicator | categories | events | time_range | actor\n\n")
         for b in sorted(low, key=lambda x: x.get("related_event_count", 0), reverse=True):
             f.write(render_low_signal_row(b) + "\n")
     print(f"[info] wrote {table_path}: {len(low)} low-signal indicators, {os.path.getsize(table_path)} bytes")

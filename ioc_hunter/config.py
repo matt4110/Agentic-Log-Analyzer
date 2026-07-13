@@ -4,18 +4,20 @@ Central configuration for the IOC hunter.
 Tune thresholds here as you see real traffic. Nothing here is sacred -
 these are reasonable starting points for a small web server.
 """
-
+from datetime import date
 import re
+
+current_date = date.today().isoformat()
 
 # ---------------------------------------------------------------------------
 # Paths (override via CLI args in main.py if you'd rather not edit this file)
 # ---------------------------------------------------------------------------
-AUTH_LOG_PATH = "auth_parsed.jsonl"
-AUDITD_LOG_PATH = "auditd_parsed.jsonl"
-UFW_LOG_PATH = "ufw_parsed.jsonl"
-WAF_LOG_PATH = "safeline_parsed.jsonl"
+AUTH_LOG_PATH = f"/var/log/parsed/{current_date}-auth.jsonl"
+AUDITD_LOG_PATH = f"/var/log/parsed/{current_date}-auditd.jsonl"
+UFW_LOG_PATH = f"/var/log/parsed/{current_date}-ufw.jsonl"
+WAF_LOG_PATH = f"/var/log/parsed/{current_date}-safeline.jsonl"
 
-OUTPUT_DIR = "ioc_output"
+OUTPUT_DIR = f"/opt/Agentic-Log-Analyzer/ioc_output/{current_date}"
 DB_PATH = "actors.db"
 
 # ---------------------------------------------------------------------------
@@ -137,6 +139,17 @@ AUTH_FAILURE_PATTERNS = [
 ]
 AUTH_FAILURE_RE = re.compile("|".join(AUTH_FAILURE_PATTERNS), re.IGNORECASE)
 
+# Successful authentication - used to detect the dangerous case: a source
+# that failed repeatedly (brute force) and THEN succeeded, i.e. a likely
+# credential compromise, which is a real incident rather than background
+# noise.
+AUTH_SUCCESS_PATTERNS = [
+    r"accepted password",
+    r"accepted publickey",
+    r"session opened for user",
+]
+AUTH_SUCCESS_RE = re.compile("|".join(AUTH_SUCCESS_PATTERNS), re.IGNORECASE)
+
 # crude hostname/domain extraction from free-text auth messages
 DOMAIN_CANDIDATE_RE = re.compile(
     r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
@@ -160,7 +173,7 @@ LLM_TIMEOUT_SECONDS = 600   # CPU inference is slow; don't time out prematurely
 # processing at 75k+ tokens takes minutes per chunk and (b) small models
 # degrade on long-context retrieval, conflating details between bundles.
 # Frontier API models can handle 300000+; local models should stay small.
-CHUNK_MAX_BYTES_DEFAULT = 48_000
+CHUNK_MAX_BYTES_DEFAULT = 16_000
 
 # ---------------------------------------------------------------------------
 # Reverse-shell / malicious-command patterns matched against reconstructed
@@ -206,6 +219,11 @@ _compile_group("suspicious_cmd", SUSPICIOUS_COMMAND_PATTERNS)
 # ---------------------------------------------------------------------------
 LOW_SIGNAL_ONLY_CATEGORIES = {
     "port_scan", "repeated_blocked_connections", "unusual_outbound",
+    # plain brute force (all-failed auth floods) is constant background noise
+    # on any internet-facing box. Note: brute_force_success is deliberately
+    # NOT here - a success after failures is a real compromise lead and stays
+    # high-signal for full per-indicator analysis.
+    "brute_force",
 }
 # Low-signal bundles keep only a handful of EXAMPLE events plus aggregate
 # stats (total count, time span, distinct ports/destinations) - at scale,
@@ -215,7 +233,7 @@ LOW_SIGNAL_ONLY_CATEGORIES = {
 # much larger cap since completeness matters more there and they're
 # rarely voluminous anyway.
 MAX_RELATED_EVENTS_LOW_SIGNAL = 3
-MAX_RELATED_EVENTS_HIGH_SIGNAL = 200
+MAX_RELATED_EVENTS_HIGH_SIGNAL = 20
 
 # Several detectors (WAF injection/XSS/traversal, scanner UA, reverse-shell
 # argv, setuid escalation) emit one Flag PER matching record with no
@@ -248,8 +266,9 @@ KNOWN_PRIVESC_TOOLS = {"sudo", "su", "pkexec", "doas"}
 # System processes that legitimately run as uid=0 with no traceable auid
 # (no interactive login behind them - started at boot / by init / by cron).
 KNOWN_SYSTEM_DAEMONS = {
-    "sshd", "systemd", "cron", "crond", "init", "auditd", "rsyslogd",
-    "systemd-logind", "dbus-daemon", "networkd-dispatcher",
+    "sshd", "sshd-session", "sshd-auth", "systemd", "cron", "crond", "init",
+    "auditd", "rsyslogd", "systemd-logind", "dbus-daemon", "networkd-dispatcher",
+    "login", "gdm", "lightdm", "polkitd", "agetty",
 }
 
 # x86_64 syscall numbers for the setuid/setgid family. A process outside
