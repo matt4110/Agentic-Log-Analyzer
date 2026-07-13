@@ -168,6 +168,18 @@ LLM_TEMPERATURE = 0.2       # low - we want consistent, schema-conformant output
 LLM_MAX_RETRIES = 2         # per-chunk retries on invalid JSON output
 LLM_TIMEOUT_SECONDS = 600   # CPU inference is slow; don't time out prematurely
 
+# gpt-oss is a REASONING model: left unconstrained it spends its entire
+# output budget "thinking" and never emits the answer (finish_reason:
+# length with empty/truncated content). Three controls prevent that:
+#  - num_predict: raise the hard output-token ceiling so there's room for
+#    both reasoning AND the JSON answer.
+#  - reasoning_effort low: tell gpt-oss to think briefly, not exhaustively.
+#  - format json: Ollama constrains output to valid JSON, which also
+#    suppresses the essay-style rambling we saw.
+LLM_NUM_PREDICT = 8192
+LLM_REASONING_EFFORT = "low"   # gpt-oss-specific: low|medium|high
+LLM_FORCE_JSON = True          # use Ollama's structured-output JSON mode
+
 # Default chunk size target, in bytes. ~4 chars/token, so 48000 bytes is
 # roughly 12k tokens - sized for a local 20B model where (a) CPU prompt
 # processing at 75k+ tokens takes minutes per chunk and (b) small models
