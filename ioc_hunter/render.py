@@ -10,6 +10,52 @@ total_len, in_iface, _line) are dropped entirely.
 """
 
 import config
+import re
+
+
+# Matches control chars and raw hex-escape sequences that show up when the
+# WAF logs non-HTTP traffic (TLS handshakes, port scans) as if it were a
+# request. This binary garbage in a prompt can send a small reasoning model
+# into non-terminating loops, so we scrub it before rendering.
+_HEX_ESCAPE_RE = re.compile(r"(?:\\x[0-9A-Fa-f]{2})+")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def _sanitize(value, max_len=300):
+    """
+    Make a field safe and compact for an LLM prompt: collapse runs of hex
+    escapes to a marker, strip control characters, and truncate very long
+    values (obfuscated attack payloads can be enormous). Returns a short,
+    printable string.
+    """
+    if value is None:
+        return ""
+    s = str(value)
+    # collapse hex-escape runs (e.g. \x16\x03\x01...) to a compact marker
+    s = _HEX_ESCAPE_RE.sub("<binary>", s)
+    # drop any remaining raw control bytes
+    s = _CONTROL_RE.sub("", s)
+    if len(s) > max_len:
+        s = s[:max_len] + "...<truncated>"
+    return s
+
+
+def _is_binary_noise(rec):
+    """
+    True if a WAF record is clearly non-HTTP garbage (TLS handshake bytes,
+    malformed method) rather than a real request. These carry no analytical
+    value and destabilize the model, so they're dropped from rendering.
+    """
+    if rec.get("_source") != "waf":
+        return False
+    method = str(rec.get("method") or "")
+    path = str(rec.get("req_path") or "")
+    # real HTTP methods are short and alphabetic
+    if method and not re.fullmatch(r"[A-Z]{3,10}", method):
+        return True
+    if "\\x" in method or "\\x" in path[:20]:
+        return True
+    return False
 
 
 def _t(rec):
@@ -33,12 +79,12 @@ def render_event(rec):
     if src == "auth":
         return (f"{_t(rec)} auth {rec.get('process','?')} "
                 f"user={rec.get('user','?')} src={rec.get('src_ip','?')} "
-                f"| {rec.get('message','')}".rstrip())
+                f"| {_sanitize(rec.get('message',''))}".rstrip())
 
     if src == "auditd":
         parts = [f"{_t(rec)} auditd {rec.get('type','?')}"]
-        if rec.get("exe"): parts.append(f"exe={rec['exe']}")
-        if rec.get("acct"): parts.append(f"acct={rec['acct']}")
+        if rec.get("exe"): parts.append(f"exe={_sanitize(rec['exe'], 120)}")
+        if rec.get("acct"): parts.append(f"acct={_sanitize(rec['acct'], 60)}")
         if rec.get("op"): parts.append(f"op={rec['op']}")
         if rec.get("uid") is not None: parts.append(f"uid={rec['uid']}")
         if rec.get("auid") is not None: parts.append(f"auid={rec['auid']}")
@@ -48,8 +94,8 @@ def render_event(rec):
 
     if src == "auditd_merged":
         parts = [f"{_t(rec)} auditd_exec"]
-        if rec.get("exe"): parts.append(f"exe={rec['exe']}")
-        if rec.get("cmdline"): parts.append(f"cmd=[{rec['cmdline']}]")
+        if rec.get("exe"): parts.append(f"exe={_sanitize(rec['exe'], 120)}")
+        if rec.get("cmdline"): parts.append(f"cmd=[{_sanitize(rec['cmdline'])}]")
         if rec.get("uid") is not None: parts.append(f"uid={rec['uid']}")
         if rec.get("src_ip"):
             tag = rec["src_ip"]
@@ -62,10 +108,10 @@ def render_event(rec):
         return " ".join(parts)
 
     if src == "waf":
-        return (f"{_t(rec)} waf {rec.get('method','?')} "
-                f"{rec.get('src_ip','?')} \"{rec.get('req_path','')}\" "
+        return (f"{_t(rec)} waf {_sanitize(rec.get('method','?'), 10)} "
+                f"{rec.get('src_ip','?')} \"{_sanitize(rec.get('req_path',''))}\" "
                 f"{rec.get('response','?')} {rec.get('size','?')}b "
-                f"ua=\"{rec.get('user_agent','')}\"".rstrip())
+                f"ua=\"{_sanitize(rec.get('user_agent',''), 120)}\"".rstrip())
 
     # unknown source - fall back to key=value
     skip = {"_source", "_ts", "_line", "mac", "tos", "ttl", "ip_flags", "total_len"}
@@ -106,13 +152,19 @@ def render_bundle(bundle):
         lines.append(f"  - {r}")
 
     events = bundle.get("events", [])
+    # drop binary/non-HTTP garbage events (TLS handshakes logged as requests)
+    clean_events = [ev for ev in events if not _is_binary_noise(ev)]
+    dropped_noise = len(events) - len(clean_events)
+
     ec = bundle.get("related_event_count", len(events))
     ehdr = f"correlated events ({ec} total"
     if bundle.get("related_events_truncated"):
-        ehdr += f", showing {len(events)}"
+        ehdr += f", showing {len(clean_events)}"
+    elif dropped_noise:
+        ehdr += f", showing {len(clean_events)} ({dropped_noise} binary/non-HTTP events omitted)"
     ehdr += "):"
     lines.append(ehdr)
-    for ev in events:
+    for ev in clean_events:
         lines.append(f"  {render_event(ev)}")
 
     return "\n".join(lines)

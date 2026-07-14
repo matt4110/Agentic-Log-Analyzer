@@ -65,7 +65,32 @@ def build_bundles_from_report(report):
 
 def is_low_signal(bundle):
     cats = set(bundle.get("categories", []))
-    return bool(cats) and cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES)
+    if not cats:
+        return False
+    # Standard low-signal: categories that are always background noise.
+    if cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES):
+        return True
+    # Demote web-attack indicators whose requests ALL got 4xx/5xx responses -
+    # a SQLi/traversal/injection/scan that only ever produced blocked (403),
+    # not-found (404), or error responses did not accomplish anything. The
+    # ones worth deep analysis are those with a 2xx (something worked). If a
+    # bundle's categories are all web-attack types AND no event shows a 2xx
+    # response, treat it as low-signal noise.
+    if cats.issubset(config.WEB_ATTACK_CATEGORIES):
+        if not _has_successful_web_response(bundle):
+            return True
+    return False
+
+
+def _has_successful_web_response(bundle):
+    """True if any WAF event in the bundle returned a 2xx status."""
+    for ev in bundle.get("events", []):
+        if ev.get("_source") != "waf":
+            continue
+        resp = str(ev.get("response") or "")
+        if resp.startswith("2"):
+            return True
+    return False
 
 
 def _bundle_text(bundle):

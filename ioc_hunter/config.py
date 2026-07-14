@@ -4,6 +4,7 @@ Central configuration for the IOC hunter.
 Tune thresholds here as you see real traffic. Nothing here is sacred -
 these are reasonable starting points for a small web server.
 """
+
 from datetime import date
 import re
 
@@ -185,7 +186,13 @@ LLM_FORCE_JSON = True          # use Ollama's structured-output JSON mode
 # processing at 75k+ tokens takes minutes per chunk and (b) small models
 # degrade on long-context retrieval, conflating details between bundles.
 # Frontier API models can handle 300000+; local models should stay small.
-CHUNK_MAX_BYTES_DEFAULT = 16_000
+# Default chunk size target, in bytes. Kept small deliberately: gpt-oss:20b
+# on CPU reasons about every indicator in a chunk before answering, and a
+# dense multi-indicator chunk can make it loop without converging. ~6000
+# bytes keeps each chunk to roughly 1-2 indicators so each call stays small
+# enough for the model to finish. Raise only if your model handles bigger
+# chunks reliably.
+CHUNK_MAX_BYTES_DEFAULT = 6_000
 
 # ---------------------------------------------------------------------------
 # Reverse-shell / malicious-command patterns matched against reconstructed
@@ -236,6 +243,17 @@ LOW_SIGNAL_ONLY_CATEGORIES = {
     # NOT here - a success after failures is a real compromise lead and stays
     # high-signal for full per-indicator analysis.
     "brute_force",
+}
+
+# Web-attack categories that are only worth deep analysis if something
+# actually succeeded (a 2xx response). When a bundle's categories are all
+# within this set AND every request got a 4xx/5xx, the chunker routes it to
+# the low-signal table instead of a full chunk - a blocked/404'd attack
+# accomplished nothing and is just internet background noise. A 2xx on any
+# of these keeps the indicator high-signal.
+WEB_ATTACK_CATEGORIES = {
+    "sql_injection", "command_injection", "xss", "directory_traversal",
+    "scanner_tool", "idor_heuristic",
 }
 # Low-signal bundles keep only a handful of EXAMPLE events plus aggregate
 # stats (total count, time span, distinct ports/destinations) - at scale,

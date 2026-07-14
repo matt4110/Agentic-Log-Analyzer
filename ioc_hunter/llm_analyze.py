@@ -147,6 +147,27 @@ def extract_indicators_from_chunk(chunk_text):
     return set(INDICATOR_HEADER_RE.findall(chunk_text))
 
 
+def split_chunk_into_indicators(chunk_text):
+    """
+    Split a chunk's text back into individual indicator blocks, each starting
+    at a '### INDICATOR:' header. Used for the per-indicator fallback when a
+    packed chunk fails as a whole - we retry each indicator alone so only the
+    actual offender (e.g. one that loops the model) is lost, not its
+    chunk-mates. Returns a list of (indicator_id, block_text).
+    """
+    blocks = []
+    # split keeping the delimiter by using a lookahead
+    parts = re.split(r"(?=^### INDICATOR:)", chunk_text, flags=re.MULTILINE)
+    for part in parts:
+        part = part.strip()
+        if not part.startswith("### INDICATOR:"):
+            continue
+        m = INDICATOR_HEADER_RE.search(part)
+        if m:
+            blocks.append((m.group(1), part))
+    return blocks
+
+
 def parse_map_output(raw):
     """Extract the JSON object from model output, tolerating stray prose or
     ```json fences that small models sometimes add despite instructions."""
@@ -224,6 +245,23 @@ def synthesize_report(all_findings, low_signal_count, low_signal_note, args):
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
+def _record_failure(blocks, chunk_text, chunk_dir, chunk_num, failed_indicators):
+    """Record a chunk that failed and can't be split further (0 or 1
+    indicator). Saves the text to llm_debug/ and notes the indicator id."""
+    debug_dir = os.path.join(chunk_dir, "llm_debug")
+    os.makedirs(debug_dir, exist_ok=True)
+    if blocks:
+        ind_id = blocks[0][0]
+        failed_indicators.append(ind_id)
+        safe = ind_id.replace("/", "_").replace(":", "_")
+        fname = f"failed_{safe}.txt"
+    else:
+        failed_indicators.append(f"chunk_{chunk_num:04d}")
+        fname = f"failed_chunk_{chunk_num:04d}.txt"
+    with open(os.path.join(debug_dir, fname), "w") as f:
+        f.write(chunk_text)
+
+
 def run(chunk_dir, out_path, args):
     chunk_paths = sorted(glob.glob(os.path.join(chunk_dir, "chunk_*.txt")))
     if not chunk_paths:
@@ -250,25 +288,49 @@ def run(chunk_dir, out_path, args):
     debug_dir = os.path.join(chunk_dir, "llm_debug")
 
     print(f"[info] analyzing {len(chunk_paths)} high-signal chunk(s) with {args.model}...")
+    failed_indicators = []
     for i, cp in enumerate(chunk_paths, 1):
         with open(cp) as f:
             chunk_text = f.read()
         t0 = time.time()
         try:
             kept, dropped, raw = analyze_chunk(chunk_text, args)
+            all_findings.extend(kept)
+            all_dropped.extend(dropped)
+            msg = f"[info]   chunk {i}/{len(chunk_paths)}: {len(kept)} finding(s)"
+            if dropped:
+                msg += f", {len(dropped)} hallucinated indicator(s) dropped"
+            msg += f" ({time.time() - t0:.0f}s)"
+            print(msg)
         except Exception as e:
-            print(f"[warn]   chunk {i}/{len(chunk_paths)} failed: {e}")
-            os.makedirs(debug_dir, exist_ok=True)
-            with open(os.path.join(debug_dir, f"failed_chunk_{i:04d}.txt"), "w") as f:
-                f.write(chunk_text)
-            continue
-        all_findings.extend(kept)
-        all_dropped.extend(dropped)
-        msg = f"[info]   chunk {i}/{len(chunk_paths)}: {len(kept)} finding(s)"
-        if dropped:
-            msg += f", {len(dropped)} hallucinated indicator(s) dropped"
-        msg += f" ({time.time() - t0:.0f}s)"
-        print(msg)
+            # Option A: don't discard the whole chunk. Retry each indicator in
+            # it individually so only the genuine offender (e.g. one that
+            # loops the model) is lost - its chunk-mates still get analyzed.
+            blocks = split_chunk_into_indicators(chunk_text)
+            print(f"[warn]   chunk {i}/{len(chunk_paths)} failed as a whole ({e}); "
+                  f"retrying its {len(blocks)} indicator(s) individually...")
+            if len(blocks) <= 1:
+                # nothing to isolate - a single indicator that fails is just lost
+                _record_failure(blocks, chunk_text, chunk_dir, i, failed_indicators)
+                continue
+            for ind_id, block_text in blocks:
+                t1 = time.time()
+                try:
+                    kept, dropped, raw = analyze_chunk(block_text, args)
+                    all_findings.extend(kept)
+                    all_dropped.extend(dropped)
+                    print(f"[info]     - {ind_id}: {len(kept)} finding(s) ({time.time() - t1:.0f}s)")
+                except Exception as e2:
+                    print(f"[warn]     - {ind_id}: failed individually ({e2}) - skipped")
+                    failed_indicators.append(ind_id)
+                    os.makedirs(debug_dir, exist_ok=True)
+                    safe = ind_id.replace("/", "_").replace(":", "_")
+                    with open(os.path.join(debug_dir, f"failed_{safe}.txt"), "w") as f:
+                        f.write(block_text)
+
+    if failed_indicators:
+        print(f"[warn] {len(failed_indicators)} indicator(s) could not be analyzed even "
+              f"individually (saved to llm_debug/): {failed_indicators}")
 
     if all_dropped:
         print(f"[warn] dropped {len(all_dropped)} findings citing indicators not in their chunk: "
