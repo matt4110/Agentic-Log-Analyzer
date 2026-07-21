@@ -194,10 +194,79 @@ def detect_large_responses(waf_records):
     return flags
 
 
+def detect_login_bruteforce_success(waf_records):
+    """
+    Failed logins (POST to a login path -> LOGIN_FAIL_STATUS, typically 200
+    re-rendering the login page) followed by a success (POST -> 302 redirect)
+    from the same IP within the window. High-signal: a successful login after
+    repeated failures is exactly the "brute force that got in" case.
+
+    Caveat baked into the threshold, not the code: this cannot tell a real
+    attacker from an admin who mistyped a few times. The count threshold is
+    what separates them - a human fumbles a handful of times, a brute-force
+    makes many attempts.
+    """
+    threshold, window = config.LOGIN_BRUTEFORCE_THRESHOLD
+
+    def _is_login_path(r):
+        return (r.get("req_path") in config.LOGIN_PATHS
+                and (r.get("method") or "").upper() == "POST")
+
+    def _host_ok(r):
+        if config.LOGIN_HOST is None:
+            return True
+        # host field may be absent in older parsed logs; if so, don't exclude
+        h = r.get("host")
+        return h is None or h == config.LOGIN_HOST
+
+    # group candidate login events by src_ip, sorted by time
+    by_ip = defaultdict(list)
+    for r in waf_records:
+        if not _is_login_path(r) or not _host_ok(r):
+            continue
+        ip = r.get("src_ip")
+        ts = r.get("_ts")
+        if ip and ts is not None:
+            by_ip[ip].append((ts, r))
+
+    flags = []
+    for ip, pairs in by_ip.items():
+        pairs.sort(key=lambda p: p[0])
+        # walk chronologically; count failures, and when a success appears,
+        # check whether >= threshold failures preceded it within the window
+        for i, (ts_success, rec_success) in enumerate(pairs):
+            if str(rec_success.get("response")) not in config.LOGIN_SUCCESS_STATUS:
+                continue
+            # count failures before this success, inside the window
+            preceding_failures = [
+                r for (ts, r) in pairs[:i]
+                if str(r.get("response")) in config.LOGIN_FAIL_STATUS
+                and (ts_success - ts).total_seconds() <= window
+            ]
+            if len(preceding_failures) >= threshold:
+                evidence = preceding_failures + [rec_success]
+                flags.append(Flag(
+                    indicator=ip, indicator_type="ip",
+                    category="login_bruteforce_success",
+                    description=(
+                        f"POSSIBLE SUCCESSFUL LOGIN BRUTE FORCE: {ip} made "
+                        f"{len(preceding_failures)} failed login attempts (POST "
+                        f"{'/'.join(config.LOGIN_PATHS)} -> {'/'.join(config.LOGIN_FAIL_STATUS)}) "
+                        f"then a successful login (-> {'/'.join(config.LOGIN_SUCCESS_STATUS)}) "
+                        f"within {window}s - investigate; note this also matches an "
+                        f"authorized user who mistyped their password repeatedly"
+                    ),
+                    evidence=evidence,
+                ))
+                break  # one flag per IP is enough; evidence already gathered
+    return flags
+
+
 def run_all(waf_records):
     flags = []
     flags += detect_injection_and_xss(waf_records)
     flags += detect_scanner_user_agents(waf_records)
     flags += detect_idor_heuristic(waf_records)
     flags += detect_large_responses(waf_records)
+    flags += detect_login_bruteforce_success(waf_records)
     return flags
