@@ -41,6 +41,7 @@ with open(waf_file, "r") as logfile, \
                 "datetime": match.group("iso_datetime"),
                 "src_ip": match.group("source_ip"),
                 "method": method,
+                "host": match.group("host"),
                 "req_path": path,
                 "response": match.group("status"),
                 "user_agent": match.group("user_agent"),
