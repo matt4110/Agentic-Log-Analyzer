@@ -28,6 +28,21 @@ BRUTE_FORCE_THRESHOLD = (5, 600)          # 5 auth failures / 10 min / src_ip or
 PORT_SCAN_THRESHOLD = (15, 300)           # 15 distinct dst_ports / 5 min / src_ip
 IDOR_SEQUENTIAL_THRESHOLD = (8, 120)      # 8 sequential numeric IDs / 2 min / src_ip
 
+# WAF login brute-force-success detection. On this app, a failed login
+# re-renders the login page (POST / -> 200); a successful login redirects
+# (POST / -> 302). So N failed POSTs to the login path followed by a 302
+# from the same IP within the window = a login that succeeded after repeated
+# failures. NOTE: this cannot distinguish a real attacker from an admin who
+# mistyped their password several times - both produce identical requests.
+# The threshold is the separator: a human fumbles 2-3 times, a brute-force
+# makes many attempts. Tune LOGIN_BRUTEFORCE_THRESHOLD up if your own logins
+# trip it.
+LOGIN_BRUTEFORCE_THRESHOLD = (5, 600)     # 5 failed POSTs / 10 min before a success
+LOGIN_PATHS = {"/"}                        # request paths treated as the login endpoint
+LOGIN_HOST = "matt4110.com"                # host to match; set to None to match any host
+LOGIN_FAIL_STATUS = {"200"}                # status(es) that mean "login failed / page re-served"
+LOGIN_SUCCESS_STATUS = {"302"}             # status(es) that mean "login succeeded / redirect"
+
 # ---------------------------------------------------------------------------
 # WAF response size (bytes) - flag unusually large responses (possible exfil)
 # ---------------------------------------------------------------------------
