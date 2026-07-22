@@ -196,6 +196,42 @@ LLM_NUM_PREDICT = 8192
 LLM_REASONING_EFFORT = "low"   # gpt-oss-specific: low|medium|high
 LLM_FORCE_JSON = True          # use Ollama's structured-output JSON mode
 
+# ---------------------------------------------------------------------------
+# Threat-intel enrichment (enrich_intel.py)
+# Read-only lookups that annotate high-signal indicators with reputation from
+# external providers. API keys come from environment variables (set them in
+# your .env, sourced by run_daily.sh) - never hardcode credentials here.
+#
+# Provider notes / free-tier limits (verify against current provider docs):
+#   - GreyNoise Community: ~50 lookups/WEEK (tight) - answers "is this internet
+#     background noise vs targeted?". Best used to DOWNGRADE noisy scanners.
+#     Env: GREYNOISE_API_KEY
+#   - AbuseIPDB: ~1000 checks/day (generous) - crowdsourced abuse confidence
+#     score 0-100. The volume workhorse. Env: ABUSEIPDB_API_KEY
+#   - ThreatFox (abuse.ch): IOC match against known malware infra (C2/botnet/
+#     payload). A hit is high-signal; most opportunistic scanners won't match.
+#     Env: THREATFOX_API_KEY
+#
+# Aggressive caching in actors.db means each IP is looked up at most once per
+# CACHE_TTL window - critical for staying under GreyNoise's weekly limit, since
+# repeat scanners are already cached from prior runs.
+# ---------------------------------------------------------------------------
+INTEL_ENABLED = True
+INTEL_CACHE_TTL_DAYS = 7           # re-query an indicator only after this many days
+INTEL_ONLY_HIGH_SIGNAL = True      # never spend lookups on the low-signal noise table
+INTEL_REQUEST_TIMEOUT = 15         # seconds per provider call
+INTEL_INTER_CALL_DELAY = 1.0       # seconds between calls (be a good API citizen)
+
+# Per-provider toggles + which env var holds each key. A provider with no key
+# in the environment is silently skipped, so you can enable them one at a time
+# as you create accounts.
+INTEL_PROVIDERS = {
+    "greynoise": {"enabled": True,  "env_key": "GREYNOISE_API_KEY"},
+    "abuseipdb": {"enabled": True,  "env_key": "ABUSEIPDB_API_KEY"},
+    "threatfox": {"enabled": True,  "env_key": "THREATFOX_API_KEY"},
+}
+
+
 # Default chunk size target, in bytes. ~4 chars/token, so 48000 bytes is
 # roughly 12k tokens - sized for a local 20B model where (a) CPU prompt
 # processing at 75k+ tokens takes minutes per chunk and (b) small models

@@ -12,6 +12,13 @@ import sqlite3
 from datetime import datetime, timezone
 
 
+def _ensure_aware(dt):
+    """Treat a naive datetime as UTC so age math never crashes on tz mismatch."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS actors (
     indicator   TEXT NOT NULL,
@@ -27,6 +34,14 @@ CREATE TABLE IF NOT EXISTS actors (
 CREATE TABLE IF NOT EXISTS known_outbound_destinations (
     dst_ip      TEXT PRIMARY KEY,
     first_seen  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS threat_intel (
+    indicator   TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    looked_up   TEXT NOT NULL,           -- ISO timestamp of the lookup
+    result_json TEXT NOT NULL,           -- JSON: per-provider results + summary
+    PRIMARY KEY (indicator, type)
 );
 """
 
@@ -113,6 +128,40 @@ class ActorDB:
             )
 
     def commit(self):
+        self.conn.commit()
+
+    # -- threat-intel cache -------------------------------------------
+    def get_intel(self, indicator, indicator_type, max_age_days):
+        """Return cached intel result dict if present and fresher than
+        max_age_days, else None (signalling a fresh lookup is needed)."""
+        import datetime as _dt
+        cur = self.conn.execute(
+            "SELECT looked_up, result_json FROM threat_intel WHERE indicator=? AND type=?",
+            (indicator, indicator_type),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        try:
+            looked_up = _dt.datetime.fromisoformat(row[0])
+        except ValueError:
+            return None
+        age = (_dt.datetime.now(_dt.timezone.utc) - _ensure_aware(looked_up)).days
+        if age > max_age_days:
+            return None
+        try:
+            return json.loads(row[1])
+        except json.JSONDecodeError:
+            return None
+
+    def set_intel(self, indicator, indicator_type, result_dict, looked_up=None):
+        import datetime as _dt
+        now = looked_up or _dt.datetime.now(_dt.timezone.utc).isoformat()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO threat_intel (indicator, type, looked_up, result_json) "
+            "VALUES (?, ?, ?, ?)",
+            (indicator, indicator_type, now, json.dumps(result_dict)),
+        )
         self.conn.commit()
 
     def all_actors(self):

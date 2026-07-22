@@ -139,6 +139,11 @@ def render_bundle(bundle):
     lines = []
     lines.append(f"### INDICATOR: {bundle['indicator']} ({bundle['type']})")
     lines.append(render_history(bundle.get("actor_history")))
+    ti = bundle.get("threat_intel")
+    if ti and ti.get("summary"):
+        risk = ti.get("risk", "unknown")
+        marker = "\u26A0\uFE0F " if risk == "flagged-malicious" else ""
+        lines.append(f"threat intel [{risk}]: {marker}{ti['summary']}")
     lines.append(f"categories: {', '.join(bundle.get('categories', []))}")
 
     rc = bundle.get("reason_count")
