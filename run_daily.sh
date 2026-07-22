@@ -14,6 +14,22 @@ PROJECT_DIR="/opt/Agentic-Log-Analyzer"
 PYTHON="/usr/bin/python3"          # system python (no venv, libs installed system-wide)
 LOG_DIR="${PROJECT_DIR}/run_logs"  # where this wrapper's own run logs go
 NOTIFIER="${PROJECT_DIR}/notify_discord.py"
+ENV_FILE="${PROJECT_DIR}/.env"
+
+# Load secrets/keys from .env into the environment so EVERY step sees them -
+# main.py's threat-intel enrichment (GREYNOISE/ABUSEIPDB/THREATFOX keys) and
+# the Discord notifier (DISCORD_WEBHOOK_URL) all read os.environ. A .env file
+# on disk is NOT automatically in the environment; it must be sourced. Doing
+# it here means the script behaves identically run by hand or by cron, so the
+# cron entry no longer needs to source .env itself.
+if [[ -f "${ENV_FILE}" ]]; then
+    set -a               # export everything defined while sourcing
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}"
+    set +a
+else
+    echo "[warn] ${ENV_FILE} not found - API keys and Discord webhook will be unset"
+fi
 
 # Date the run is FOR. The pipeline names its files/dirs with this date, and
 # main.py creates ioc_output/<DATE>/. Computing it once here is what prevents
