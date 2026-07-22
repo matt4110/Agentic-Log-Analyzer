@@ -39,6 +39,9 @@ SEVERITY_EMOJI = {
 
 def _post(webhook, payload=None, files=None):
     """POST to the Discord webhook. If files given, send multipart; else JSON."""
+    # Discord's API rejects requests with the default 'Python-urllib/x.y'
+    # User-Agent (HTTP 403). An explicit UA is required.
+    ua = "ioc-hunter-notifier/1.0 (+https://github.com/matt4110/Agentic-Log-Analyzer)"
     if files:
         # multipart/form-data with a file attachment + JSON payload
         boundary = "----ioc-hunter-boundary"
@@ -55,12 +58,16 @@ def _post(webhook, payload=None, files=None):
             body += fcontent
             body += b"\r\n"
         body += f"--{boundary}--\r\n".encode()
-        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": ua,
+        }
         req = urllib.request.Request(webhook, data=body, headers=headers)
     else:
         data = json.dumps(payload).encode()
         req = urllib.request.Request(webhook, data=data,
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": ua})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.status
 
