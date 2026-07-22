@@ -25,6 +25,7 @@ from loaders import load_all
 from actor_db import ActorDB
 from correlator import build_bundles, combined_timeline, filter_local_flags
 import audit_merge
+import enrich_intel
 
 from detectors import auth as auth_detectors
 from detectors import auditd as auditd_detectors
@@ -100,6 +101,23 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
         h = history.get((b["indicator"], b["type"]))
         b["known_actor"] = h is not None
         b["actor_history"] = h  # None if first time ever seen
+        # tag signal level so enrichment can skip the noise table (conserving
+        # the scarce GreyNoise weekly quota). Mirrors the chunker's routing.
+        cats = set(b.get("categories", []))
+        b["_low_signal"] = bool(cats) and cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES)
+
+    # threat-intel enrichment (read-only) of high-signal indicators
+    if config.INTEL_ENABLED:
+        t_intel = time.time()
+        print("[info] enriching high-signal indicators with threat intel...")
+        try:
+            bundles, n_enriched = enrich_intel.enrich_bundles(
+                bundles, db, high_signal_only=config.INTEL_ONLY_HIGH_SIGNAL)
+            print(f"[info]   enriched {n_enriched} indicator(s) ({time.time() - t_intel:.1f}s elapsed)")
+        except Exception as e:
+            # enrichment must never break the run
+            print(f"[warn]   threat-intel enrichment failed, continuing without it: {e}")
+
     timeline = combined_timeline(bundles)
     print(f"[info] correlation complete ({time.time() - t3:.1f}s elapsed)")
 
@@ -127,6 +145,7 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
                 "related_events_stats": b.get("related_events_stats"),
                 "known_actor": b["known_actor"],
                 "actor_history": b["actor_history"],
+                "threat_intel": b.get("threat_intel"),
             }
             for b in bundles
         ],
