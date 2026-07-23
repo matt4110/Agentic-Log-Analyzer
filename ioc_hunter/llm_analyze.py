@@ -211,35 +211,104 @@ def analyze_chunk(chunk_text, args):
 
 
 # ---------------------------------------------------------------------------
-# REDUCE step
+# REPORT GENERATION - deterministic, built in Python from the validated
+# findings. NOT written by the LLM.
+#
+# Rationale: an LLM asked to write a report over structured data will invent
+# aggregate statistics, dates, and whole sections - it cannot reliably count,
+# and it has no way to check itself. Observed failure: a run producing 47
+# findings from ~2,800 records generated a report claiming "3,452,127 HTTP
+# requests" and a date two years off, with severity tables unrelated to the
+# actual findings.
+#
+# The division of labour that works: the LLM writes the per-finding SUMMARY
+# (reading a request path and describing it in English - genuinely useful,
+# and it did that accurately), while Python does every count, every grouping,
+# every total, and the document structure. Nothing in this report exists that
+# was not computed from the findings list.
 # ---------------------------------------------------------------------------
-REDUCE_SYSTEM = (
-    "You are a SOC lead writing the daily IOC summary for the team. You are given "
-    "structured findings already validated from today's logs, plus a note on "
-    "low-signal background noise volume. Write a concise markdown report with: "
-    "a one-paragraph executive summary; a 'Priority Investigations' section listing "
-    "high/critical findings first with their recommended actions; a brief 'Lower "
-    "Priority' section; and a one-line note on background scanning volume. "
-    "Do NOT invent indicators or details not in the findings. Do NOT name threat "
-    "actors, malware families, or CVEs unless present in the findings. Be direct and "
-    "brief - this is a daily triage aid, not a formal report."
-)
+SEVERITY_ORDER = ["critical", "high", "medium", "low"]
 
 
-def synthesize_report(all_findings, low_signal_count, low_signal_note, args):
-    payload = {
-        "findings": all_findings,
-        "low_signal_indicator_count": low_signal_count,
-        "low_signal_note": low_signal_note,
-    }
-    user = ("Findings and context (JSON):\n" + json.dumps(payload, default=str) +
-            "\n\nWrite the daily markdown report now.")
-    messages = [
-        {"role": "system", "content": REDUCE_SYSTEM},
-        {"role": "user", "content": user},
-    ]
-    return call_llm(args.base_url, args.model, messages,
-                    args.temperature, args.timeout, args.retries)
+def _sev_rank(f):
+    return SEVERITY_ORDER.index(f.get("severity", "low").lower()) \
+        if f.get("severity", "low").lower() in SEVERITY_ORDER else 99
+
+
+def build_report(all_findings, low_signal_count, failed_indicators,
+                 dropped_indicators, run_date, chunk_count):
+    """Generate the daily markdown report deterministically from findings."""
+    lines = []
+    counts = {}
+    for f in all_findings:
+        sev = (f.get("severity") or "unknown").lower()
+        counts[sev] = counts.get(sev, 0) + 1
+
+    total = len(all_findings)
+    lines.append(f"# Daily IOC Report — {run_date}")
+    lines.append("")
+    lines.append("*Counts and structure generated deterministically from validated "
+                 "findings. Per-finding summaries were written by the analysis model "
+                 "from the evidence in each bundle.*")
+    lines.append("")
+
+    # --- Summary (computed, not narrated) ---
+    lines.append("## Summary")
+    lines.append("")
+    if total == 0:
+        lines.append("No high-signal findings today.")
+    else:
+        sev_parts = [f"{counts[s]} {s}" for s in SEVERITY_ORDER if counts.get(s)]
+        lines.append(f"- **Findings:** {total} ({', '.join(sev_parts)})")
+        lines.append(f"- **Analyzed in:** {chunk_count} chunk(s)")
+    lines.append(f"- **Low-signal indicators (background noise):** {low_signal_count}")
+    if failed_indicators:
+        lines.append(f"- **⚠️ Unanalyzed (pipeline degraded):** {len(failed_indicators)} "
+                     f"— {', '.join(failed_indicators[:10])}")
+    if dropped_indicators:
+        lines.append(f"- **⚠️ Dropped (model cited indicators not in input):** "
+                     f"{len(dropped_indicators)}")
+    lines.append("")
+
+    # --- Findings by severity ---
+    ordered = sorted(all_findings, key=_sev_rank)
+    for sev in SEVERITY_ORDER:
+        group = [f for f in ordered if (f.get("severity") or "").lower() == sev]
+        if not group:
+            continue
+        lines.append(f"## {sev.capitalize()} ({len(group)})")
+        lines.append("")
+        for f in group:
+            ind = f.get("indicator", "?")
+            conf = f.get("confidence", "?")
+            lines.append(f"### {ind}")
+            lines.append(f"*confidence: {conf}*")
+            lines.append("")
+            lines.append(f.get("summary", "").strip() or "_(no summary)_")
+            action = (f.get("recommended_action") or "").strip()
+            if action:
+                lines.append("")
+                lines.append(f"**Recommended action:** {action}")
+            lines.append("")
+
+    # --- Honest caveats, always present ---
+    lines.append("---")
+    lines.append("")
+    lines.append("## Caveats")
+    lines.append("")
+    lines.append("- Severity and confidence values are the analysis model's judgement "
+                 "of each bundle's evidence, not a calibrated score.")
+    lines.append("- Indicators on the admin allowlist are routed to the low-signal "
+                 "table; if an expected admin source is missing from that list, its "
+                 "normal activity may appear here as a finding.")
+    lines.append("- A finding means a detector matched and the evidence was reviewed. "
+                 "It does not by itself mean an attack succeeded — check the response "
+                 "codes and evidence in the linked chunk before acting.")
+    if failed_indicators:
+        lines.append("- **This run was partially degraded**: some indicators could not "
+                     "be analyzed. A reduced finding count does NOT mean a quiet day.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -336,22 +405,29 @@ def run(chunk_dir, out_path, args):
         print(f"[warn] dropped {len(all_dropped)} findings citing indicators not in their chunk: "
               f"{sorted(set(all_dropped))[:10]}{'...' if len(set(all_dropped)) > 10 else ''}")
 
-    print(f"[info] synthesizing final report from {len(all_findings)} validated finding(s)...")
-    if not all_findings and low_signal_count == 0:
-        report_md = "# Daily IOC Report\n\nNo indicators flagged today.\n"
-    else:
-        try:
-            report_md = synthesize_report(all_findings, low_signal_count, low_signal_note, args)
-        except Exception as e:
-            print(f"[warn] synthesis call failed ({e}); writing raw findings instead")
-            report_md = ("# Daily IOC Report (synthesis failed - raw findings)\n\n"
-                         + "```json\n" + json.dumps(all_findings, indent=2, default=str) + "\n```\n")
+    # Report is BUILT, not generated: every count and section comes from the
+    # findings list. No LLM call here, so there is nothing to hallucinate and
+    # nothing to fall back from.
+    run_date = os.path.basename(out_path).replace("daily_report_", "").replace(".md", "")
+    if not run_date or len(run_date) != 10:
+        run_date = time.strftime("%Y-%m-%d", time.gmtime())
+    print(f"[info] building report from {len(all_findings)} validated finding(s)...")
+    report_md = build_report(
+        all_findings,
+        low_signal_count=low_signal_count,
+        failed_indicators=failed_indicators,
+        dropped_indicators=sorted(set(all_dropped)),
+        run_date=run_date,
+        chunk_count=len(chunk_paths),
+    )
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(report_md)
         # always append the machine-readable findings for auditability
         f.write("\n\n<!-- validated_findings_json\n")
-        f.write(json.dumps({"findings": all_findings, "dropped_indicators": all_dropped},
+        f.write(json.dumps({"findings": all_findings,
+                            "dropped_indicators": sorted(set(all_dropped)),
+                            "failed_indicators": failed_indicators},
                            default=str))
         f.write("\n-->\n")
 

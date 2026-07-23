@@ -67,6 +67,12 @@ def is_low_signal(bundle):
     cats = set(bundle.get("categories", []))
     if not cats:
         return False
+    # Admin allowlist: your own IP doing admin things is not an incident.
+    # Downgraded (still visible in the low-signal table), never dropped -
+    # an attacker operating from your admin IP is exactly what you'd want
+    # to still be able to see.
+    if config.ADMIN_DOWNGRADE_NOT_DROP and bundle.get("indicator") in config.ADMIN_IPS:
+        return True
     # Standard low-signal: categories that are always background noise.
     if cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES):
         return True

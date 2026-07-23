@@ -28,6 +28,32 @@ BRUTE_FORCE_THRESHOLD = (5, 600)          # 5 auth failures / 10 min / src_ip or
 PORT_SCAN_THRESHOLD = (15, 300)           # 15 distinct dst_ports / 5 min / src_ip
 IDOR_SEQUENTIAL_THRESHOLD = (8, 120)      # 8 sequential numeric IDs / 2 min / src_ip
 
+# ---------------------------------------------------------------------------
+# Admin allowlist - YOUR OWN access.
+# At the host and WAF layer, an authorized admin session and a compromised
+# one are byte-identical: same successful SSH login, same root commands, same
+# POST-then-302. No threshold can separate them, because there is nothing in
+# the data to separate. The only fix is telling the pipeline which IPs and
+# accounts are yours.
+#
+# Flags whose indicator is an allowlisted IP are DOWNGRADED, not discarded -
+# they still appear (an attacker on your admin IP, or your own credentials
+# used from elsewhere, is exactly what you'd want to see), but they are
+# routed to the low-signal table instead of generating critical findings.
+#
+# Keep this current. A stale allowlist is how you end up with a "CRITICAL:
+# attacker established persistence" alert about yourself patching the box.
+# ---------------------------------------------------------------------------
+ADMIN_IPS = {
+    # "68.43.58.246",     # <- your home IP; uncomment/edit with your real values
+}
+ADMIN_ACCOUNTS = {
+    # "cammo",            # <- your admin username(s)
+}
+# If True, allowlisted indicators are downgraded to low-signal rather than
+# dropped entirely. Strongly recommended: never blind yourself to your own IP.
+ADMIN_DOWNGRADE_NOT_DROP = True
+
 # WAF login brute-force-success detection. On this app, a failed login
 # re-renders the login page (POST / -> 200); a successful login redirects
 # (POST / -> 302). So N failed POSTs to the login path followed by a 302

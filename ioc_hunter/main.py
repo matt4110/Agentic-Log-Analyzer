@@ -104,7 +104,12 @@ def run(auth_path, auditd_path, ufw_path, waf_path, outdir, db_path):
         # tag signal level so enrichment can skip the noise table (conserving
         # the scarce GreyNoise weekly quota). Mirrors the chunker's routing.
         cats = set(b.get("categories", []))
-        b["_low_signal"] = bool(cats) and cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES)
+        is_admin = b["indicator"] in config.ADMIN_IPS
+        b["is_admin_source"] = is_admin
+        b["_low_signal"] = (
+            (config.ADMIN_DOWNGRADE_NOT_DROP and is_admin)
+            or (bool(cats) and cats.issubset(config.LOW_SIGNAL_ONLY_CATEGORIES))
+        )
 
     # threat-intel enrichment (read-only) of high-signal indicators
     if config.INTEL_ENABLED:

@@ -145,15 +145,29 @@ def detect_idor_heuristic(waf_records):
 
 def detect_large_responses(waf_records):
     """
-    Flat-ceiling large response flag, plus a relative check against the
-    median size seen for that path template in this run (catches unusual
-    dumps even on paths that are normally small).
+    Large-response / possible-exfil detection, restricted to SUCCESSFUL (2xx)
+    responses only.
+
+    Why 2xx-only: a WAF's block page (403) and a backend error page (502) are
+    large static HTML documents - often far larger than a normal successful
+    response. Without this filter, getting BLOCKED looks like data
+    exfiltration, which is exactly backwards: the request that was stopped
+    is the one that leaked nothing. Real exfiltration is a large 2xx, where
+    data actually left the server.
+
+    The median baseline is also computed from 2xx responses only, so a path
+    that mostly errors doesn't get a huge median that masks real anomalies.
     """
     flags = []
 
+    def _is_success(rec):
+        return str(rec.get("response") or "").startswith("2")
+
+    success_records = [r for r in waf_records if _is_success(r)]
+
     sizes_by_template = defaultdict(list)
     parsed_sizes = {}
-    for r in waf_records:
+    for r in success_records:
         try:
             size = int(r.get("size") or 0)
         except (TypeError, ValueError):
@@ -167,7 +181,7 @@ def detect_large_responses(waf_records):
         n = len(sorted_sizes)
         medians[template] = sorted_sizes[n // 2] if n else 0
 
-    for r in waf_records:
+    for r in success_records:
         size = parsed_sizes[id(r)]
         src_ip = r.get("src_ip")
         if not src_ip or size <= 0:
@@ -188,7 +202,8 @@ def detect_large_responses(waf_records):
         if reason:
             flags.append(Flag(
                 indicator=src_ip, indicator_type="ip", category="large_response_possible_exfil",
-                description=f"{reason} - request from {src_ip} to {r.get('req_path')}",
+                description=(f"{reason} - SUCCESSFUL ({r.get('response')}) request from "
+                             f"{src_ip} to {r.get('req_path')}"),
                 evidence=[r],
             ))
     return flags

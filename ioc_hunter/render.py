@@ -138,6 +138,10 @@ def render_bundle(bundle):
     """
     lines = []
     lines.append(f"### INDICATOR: {bundle['indicator']} ({bundle['type']})")
+    if bundle.get("is_admin_source"):
+        lines.append("NOTE: this indicator is on the ADMIN ALLOWLIST (known "
+                     "authorized source). Activity here is expected admin work "
+                     "unless it is clearly inconsistent with normal admin behavior.")
     lines.append(render_history(bundle.get("actor_history")))
     ti = bundle.get("threat_intel")
     if ti and ti.get("summary"):
